@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.7.2
+// @version      4.7.3
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
@@ -467,14 +467,6 @@
         transition: width 0.10s ease-out;
         box-shadow: 0 0 10px rgba(255,180,0,0.60);
       }
-      @keyframes mns-pb-pulse {
-        0%, 100% { box-shadow: 0 0 10px rgba(255,180,0,0.60); opacity: 1; }
-        50%       { box-shadow: 0 0 26px rgba(255,210,60,0.95); opacity: 0.68; }
-      }
-      #mns-progress-fill.mns-pb-pulsing {
-        animation: mns-pb-pulse 0.95s ease-in-out infinite;
-        transition: none;
-      }
       #mns-progress-count { font-size: 11px; opacity: 0.72; margin-top: 6px; text-align: right; }
       /* ── End-of-task summary dialog ────────────────────────────────── */
       #mns-summary {
@@ -562,19 +554,19 @@
     document.body.appendChild(summaryEl);
 
     const mnsProgress = {
-      show(label, total) {
+      show(label) {
         document.getElementById('mns-progress-label').textContent = label;
         document.getElementById('mns-progress-fill').style.width = '0%';
-        document.getElementById('mns-progress-count').textContent = `0 / ${total}`;
+        document.getElementById('mns-progress-count').textContent = '';
         progressEl.style.display = 'block';
-      },
-      update(done, total) {
-        const pct = total > 0 ? Math.round((done / total) * 100) : 100;
-        document.getElementById('mns-progress-fill').style.width = pct + '%';
-        document.getElementById('mns-progress-count').textContent = `${done} / ${total}`;
       },
       hide() { progressEl.style.display = 'none'; },
     };
+
+    function mnsProgressSetPct(pct, countText) {
+      document.getElementById('mns-progress-fill').style.width = Math.min(pct, 100) + '%';
+      if (countText != null) document.getElementById('mns-progress-count').textContent = countText;
+    }
 
     function mnsSummaryDialog(result, label) {
       const { filled, skippedExisting = 0, skippedNoGrade = 0, unmatched = 0 } = result;
@@ -648,30 +640,33 @@
       return null;
     }
 
-    // Waits until the Score: row (or the full table as fallback) stops receiving
-    // DOM mutations for quiesceMs — meaning Nova's weighted-score calculation has settled.
-    function waitForScoreRowToSettle(tableEl, quiesceMs = 700, timeoutMs = 12000) {
-      const targetEl = findScoreRow(tableEl) || tableEl;
-      return new Promise(resolve => {
-        if (!targetEl) { setTimeout(resolve, quiesceMs); return; }
-        let timer = setTimeout(() => { observer.disconnect(); resolve(); }, quiesceMs);
-        const observer = new MutationObserver(() => {
-          clearTimeout(timer);
-          timer = setTimeout(() => { observer.disconnect(); resolve(); }, quiesceMs);
-        });
-        observer.observe(targetEl, { subtree: true, childList: true, characterData: true, attributes: true });
-        setTimeout(() => { clearTimeout(timer); observer.disconnect(); resolve(); }, timeoutMs);
+    // Start a MutationObserver on the Score: row BEFORE filling begins so
+    // mutations that fire synchronously during cell writes are captured.
+    // Returns { promise, scoreRow } — promise resolves when mutations quiesce.
+    function createScoreSettleWatcher(tableEl, quiesceMs = 700, timeoutMs = 12000) {
+      const scoreRow = findScoreRow(tableEl);
+      const targetEl = scoreRow || tableEl;
+      if (!targetEl) return { promise: new Promise(r => setTimeout(r, quiesceMs)), scoreRow: null };
+      let resolveSettle;
+      const promise = new Promise(r => { resolveSettle = r; });
+      let quiesceTimer = setTimeout(() => { observer.disconnect(); resolveSettle(); }, quiesceMs);
+      const observer = new MutationObserver(() => {
+        clearTimeout(quiesceTimer);
+        quiesceTimer = setTimeout(() => { observer.disconnect(); resolveSettle(); }, quiesceMs);
       });
+      observer.observe(targetEl, { subtree: true, childList: true, characterData: true, attributes: true });
+      setTimeout(() => { clearTimeout(quiesceTimer); observer.disconnect(); resolveSettle(); }, timeoutMs);
+      return { promise, scoreRow };
     }
 
-    function mnsProgressSettle(label) {
-      document.getElementById('mns-progress-label').textContent = label;
-      document.getElementById('mns-progress-fill').classList.add('mns-pb-pulsing');
-    }
-
-    function mnsProgressDone() {
-      document.getElementById('mns-progress-fill').classList.remove('mns-pb-pulsing');
-      progressEl.style.display = 'none';
+    // Count Score: cells (at the given column indices) that have a computed value.
+    function countFilledScoreCells(scoreRow, colIndices) {
+      if (!scoreRow || !colIndices.length) return 0;
+      const cells = scoreRow.querySelectorAll('td, th');
+      return colIndices.filter(i => {
+        const txt = cells[i]?.textContent.trim();
+        return txt && txt !== '-' && txt !== '—';
+      }).length;
     }
 
     function flash(text, color = '#2a7a2a', ms = 7000) {
@@ -1059,13 +1054,26 @@
       const matches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[actKey]);
       hideUndoBtn();
 
-      mnsProgress.show(`Filling "${rowLabel}"…`, matches.length);
-      const result = await fillRowAsync(matches, skipExisting, done => mnsProgress.update(done, matches.length));
-      mnsProgress.update(matches.length, matches.length);
+      const tableEl = assessmentRow.row.closest('table');
+      const colIndices = parsed_studentCols_cache.map(c => c.colIndex);
+      const { promise: settlePromise, scoreRow } = createScoreSettleWatcher(tableEl);
 
-      mnsProgressSettle('Calculating scores…');
-      await waitForScoreRowToSettle(assessmentRow.row.closest('table'));
-      mnsProgressDone();
+      mnsProgress.show(`Filling "${rowLabel}"…`);
+      const result = await fillRowAsync(matches, skipExisting, done => {
+        mnsProgressSetPct(Math.round((done / matches.length) * 85), `${done} / ${matches.length}`);
+      });
+
+      document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
+      const scoreInterval = (scoreRow && colIndices.length) ? setInterval(() => {
+        const n = countFilledScoreCells(scoreRow, colIndices);
+        mnsProgressSetPct(85 + Math.round((n / colIndices.length) * 15), `${n} / ${colIndices.length} scores`);
+      }, 80) : null;
+
+      await settlePromise;
+      if (scoreInterval) clearInterval(scoreInterval);
+      mnsProgressSetPct(100, '✓ Done');
+      await new Promise(r => setTimeout(r, 250));
+      mnsProgress.hide();
 
       if (result.filled > 0) showUndoBtn(result.filled);
       highlightEmptyCells();
@@ -1312,22 +1320,30 @@
         panel.style.display = 'none';
         hideUndoBtn();
 
-        mnsProgress.show(`Filling grades for ${studentCol.name}…`, mappings.length);
+        const stuTableEl = parsed.assessmentRows[0]?.row.closest('table');
+        const colIndices = [studentCol.colIndex];
+        const { promise: settlePromise, scoreRow } = createScoreSettleWatcher(stuTableEl);
+
+        mnsProgress.show(`Filling grades for ${studentCol.name}…`);
         let filled = 0, skippedExisting = 0, processed = 0;
         for (const m of mappings) {
-          if (!m.grade || !m.input) { processed++; mnsProgress.update(processed, mappings.length); continue; }
-          const wrote = setInputValue(m.input, m.grade, skipExisting);
-          if (wrote) filled++; else skippedExisting++;
-          processed++;
-          mnsProgress.update(processed, mappings.length);
+          if (!m.grade || !m.input) { processed++; }
+          else { const wrote = setInputValue(m.input, m.grade, skipExisting); if (wrote) filled++; else skippedExisting++; processed++; }
+          mnsProgressSetPct(Math.round((processed / mappings.length) * 85), `${processed} / ${mappings.length}`);
           if (processed % 4 === 0) await new Promise(r => setTimeout(r, 0));
         }
-        mnsProgress.update(mappings.length, mappings.length);
 
-        mnsProgressSettle('Calculating scores…');
-        const stuTableEl = parsed.assessmentRows[0]?.row.closest('table');
-        await waitForScoreRowToSettle(stuTableEl);
-        mnsProgressDone();
+        document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
+        const scoreInterval = (scoreRow && colIndices.length) ? setInterval(() => {
+          const n = countFilledScoreCells(scoreRow, colIndices);
+          mnsProgressSetPct(85 + Math.round((n / colIndices.length) * 15), `${n} / ${colIndices.length} scores`);
+        }, 80) : null;
+
+        await settlePromise;
+        if (scoreInterval) clearInterval(scoreInterval);
+        mnsProgressSetPct(100, '✓ Done');
+        await new Promise(r => setTimeout(r, 250));
+        mnsProgress.hide();
 
         if (filled > 0) showUndoBtn(filled);
         highlightEmptyCells();
@@ -1451,8 +1467,12 @@
         panel.style.display = 'none';
         hideUndoBtn();
 
+        const faTableEl = rowsToFill[0]?.assessmentRow.row.closest('table');
+        const colIndices = parsed.studentCols.map(c => c.colIndex);
+        const { promise: settlePromise, scoreRow } = createScoreSettleWatcher(faTableEl);
+
         const totalCells = rowsToFill.reduce((s, r) => s + r.matches.length, 0);
-        mnsProgress.show(`Filling ${rowsToFill.length} rows…`, totalCells);
+        mnsProgress.show(`Filling ${rowsToFill.length} rows…`);
 
         let totalFilled = 0, totalSkipExist = 0, totalSkipNoGrade = 0, totalUnmatched = 0;
         let cellsDone = 0;
@@ -1462,7 +1482,7 @@
           document.getElementById('mns-progress-label').textContent =
             `Row ${i + 1}/${rowsToFill.length}: ${assessmentRow.assessment}…`;
           const result = await fillRowAsync(matches, skipExisting, done => {
-            mnsProgress.update(cellsDone + done, totalCells);
+            mnsProgressSetPct(Math.round(((cellsDone + done) / totalCells) * 85), `${cellsDone + done} / ${totalCells}`);
           });
           cellsDone += matches.length;
           totalFilled      += result.filled;
@@ -1471,12 +1491,17 @@
           totalUnmatched   += result.unmatched;
         }
 
-        mnsProgress.update(totalCells, totalCells);
+        document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
+        const scoreInterval = (scoreRow && colIndices.length) ? setInterval(() => {
+          const n = countFilledScoreCells(scoreRow, colIndices);
+          mnsProgressSetPct(85 + Math.round((n / colIndices.length) * 15), `${n} / ${colIndices.length} scores`);
+        }, 80) : null;
 
-        mnsProgressSettle('Calculating scores…');
-        const faTableEl = rowsToFill[0]?.assessmentRow.row.closest('table');
-        await waitForScoreRowToSettle(faTableEl);
-        mnsProgressDone();
+        await settlePromise;
+        if (scoreInterval) clearInterval(scoreInterval);
+        mnsProgressSetPct(100, '✓ Done');
+        await new Promise(r => setTimeout(r, 250));
+        mnsProgress.hide();
 
         if (totalFilled > 0) showUndoBtn(totalFilled);
         highlightEmptyCells();
