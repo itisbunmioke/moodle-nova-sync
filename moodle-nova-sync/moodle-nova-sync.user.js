@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.7.0
+// @version      4.7.1
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
