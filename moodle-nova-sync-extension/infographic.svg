@@ -1,0 +1,579 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 2460" width="900" height="2460" font-family="Arial, sans-serif">
+  <defs>
+    <linearGradient id="hdrGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#002d4d"/>
+      <stop offset="100%" stop-color="#005f99"/>
+    </linearGradient>
+    <linearGradient id="orangeGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#e65c00"/>
+      <stop offset="100%" stop-color="#ff8c40"/>
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#005f99"/>
+      <stop offset="100%" stop-color="#0082cc"/>
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1a7a3a"/>
+      <stop offset="100%" stop-color="#2aaa52"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="rgba(0,0,0,0.18)"/>
+    </filter>
+    <filter id="cardShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,0.14)"/>
+    </filter>
+  </defs>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- HEADER                                                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect width="900" height="210" fill="url(#hdrGrad)"/>
+
+  <!-- Dot pattern -->
+  <g fill="rgba(255,255,255,0.04)">
+    <circle cx="36" cy="36" r="3"/> <circle cx="108" cy="36" r="3"/> <circle cx="180" cy="36" r="3"/>
+    <circle cx="252" cy="36" r="3"/> <circle cx="324" cy="36" r="3"/> <circle cx="396" cy="36" r="3"/>
+    <circle cx="468" cy="36" r="3"/> <circle cx="540" cy="36" r="3"/> <circle cx="612" cy="36" r="3"/>
+    <circle cx="684" cy="36" r="3"/> <circle cx="756" cy="36" r="3"/> <circle cx="828" cy="36" r="3"/>
+    <circle cx="36" cy="108" r="3"/> <circle cx="108" cy="108" r="3"/> <circle cx="180" cy="108" r="3"/>
+    <circle cx="252" cy="108" r="3"/> <circle cx="324" cy="108" r="3"/> <circle cx="396" cy="108" r="3"/>
+    <circle cx="468" cy="108" r="3"/> <circle cx="540" cy="108" r="3"/> <circle cx="612" cy="108" r="3"/>
+    <circle cx="684" cy="108" r="3"/> <circle cx="756" cy="108" r="3"/> <circle cx="828" cy="108" r="3"/>
+    <circle cx="36" cy="180" r="3"/> <circle cx="108" cy="180" r="3"/> <circle cx="180" cy="180" r="3"/>
+    <circle cx="252" cy="180" r="3"/> <circle cx="324" cy="180" r="3"/> <circle cx="396" cy="180" r="3"/>
+    <circle cx="468" cy="180" r="3"/> <circle cx="540" cy="180" r="3"/> <circle cx="612" cy="180" r="3"/>
+    <circle cx="684" cy="180" r="3"/> <circle cx="756" cy="180" r="3"/> <circle cx="828" cy="180" r="3"/>
+  </g>
+
+  <!-- Icon mark -->
+  <rect x="32" y="30" width="78" height="78" rx="14" fill="#0082cc"/>
+  <!-- Grade sheet lines on icon -->
+  <rect x="40" y="40" width="62" height="9" rx="2" fill="rgba(255,255,255,0.95)"/>
+  <rect x="40" y="53" width="45" height="7" rx="1" fill="rgba(255,255,255,0.65)"/>
+  <rect x="40" y="63" width="38" height="7" rx="1" fill="rgba(255,255,255,0.55)"/>
+  <rect x="40" y="73" width="50" height="7" rx="1" fill="rgba(255,255,255,0.65)"/>
+  <!-- Sync arrow on icon -->
+  <circle cx="88" cy="92" r="14" fill="rgba(0,20,50,0.6)"/>
+  <path d="M76,92 A12,12 0 1,1 92,104" fill="none" stroke="#ff8b28" stroke-width="4" stroke-linecap="round"/>
+  <polygon points="90,104 98,104 94,110" fill="#ff8b28"/>
+
+  <!-- Title -->
+  <text x="124" y="72" font-size="30" font-weight="bold" fill="white">Moodle → Nova Grade Sync</text>
+  <text x="124" y="102" font-size="16" fill="rgba(255,255,255,0.80)">Step-by-step instructor walkthrough</text>
+  <text x="124" y="124" font-size="13" fill="rgba(255,255,255,0.55)">Chrome &amp; Edge extension  ·  All data stays in your browser  ·  Willis College</text>
+
+  <!-- Divider -->
+  <line x1="32" y1="150" x2="868" y2="150" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+
+  <!-- 4 feature pills -->
+  <g font-size="12" font-weight="bold">
+    <rect x="32"  y="162" width="196" height="30" rx="15" fill="rgba(255,255,255,0.10)"/>
+    <text x="130" y="182" fill="rgba(255,255,255,0.90)" text-anchor="middle">📋  One-click Capture</text>
+
+    <rect x="238" y="162" width="196" height="30" rx="15" fill="rgba(255,255,255,0.10)"/>
+    <text x="336" y="182" fill="rgba(255,255,255,0.90)" text-anchor="middle">🎯  Smart Name Matching</text>
+
+    <rect x="444" y="162" width="196" height="30" rx="15" fill="rgba(255,255,255,0.10)"/>
+    <text x="542" y="182" fill="rgba(255,255,255,0.90)" text-anchor="middle">⚙️  Per-Course Mappings</text>
+
+    <rect x="650" y="162" width="218" height="30" rx="15" fill="rgba(255,255,255,0.10)"/>
+    <text x="759" y="182" fill="rgba(255,255,255,0.90)" text-anchor="middle">🛡️  No External Servers</text>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- HOW IT WORKS — OVERVIEW FLOW                                            -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="210" width="900" height="240" fill="#f4f8fc"/>
+
+  <!-- Section label -->
+  <text x="450" y="248" text-anchor="middle" font-size="13" font-weight="bold" fill="#005f99" letter-spacing="2">HOW IT WORKS</text>
+
+  <!-- Moodle box -->
+  <rect x="50" y="265" width="220" height="130" rx="10" fill="white" filter="url(#cardShadow)"/>
+  <rect x="50" y="265" width="220" height="36" rx="10" fill="#4a2d82"/>
+  <rect x="50" y="285" width="220" height="16" fill="#4a2d82"/>
+  <text x="160" y="289" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Moodle Gradebook</text>
+  <!-- Orange bar mockup -->
+  <rect x="50" y="301" width="220" height="20" fill="#e65c00"/>
+  <text x="60" y="315" font-size="9" fill="white" font-weight="bold">📋 Moodle→Nova</text>
+  <!-- Table lines -->
+  <rect x="58" y="328" width="204" height="8" rx="1" fill="#ebebeb"/>
+  <rect x="58" y="340" width="204" height="8" rx="1" fill="#f7f7f7"/>
+  <rect x="58" y="352" width="204" height="8" rx="1" fill="#ebebeb"/>
+  <text x="160" y="376" text-anchor="middle" font-size="11" fill="#4a2d82" font-weight="bold">Grades captured here</text>
+
+  <!-- Arrow 1 -->
+  <g transform="translate(310,320)">
+    <path d="M0,10 Q40,0 80,10" fill="none" stroke="#005f99" stroke-width="2.5" stroke-dasharray="6 3"/>
+    <polygon points="76,5 86,10 76,15" fill="#005f99"/>
+    <rect x="10" y="18" width="60" height="18" rx="4" fill="#e8f4ff"/>
+    <text x="40" y="31" text-anchor="middle" font-size="9" fill="#005f99" font-weight="bold">chrome.storage</text>
+    <text x="40" y="42" text-anchor="middle" font-size="9" fill="#666">(browser-local)</text>
+  </g>
+
+  <!-- Nova box -->
+  <rect x="430" y="265" width="220" height="130" rx="10" fill="white" filter="url(#cardShadow)"/>
+  <rect x="430" y="265" width="220" height="36" rx="10" fill="#1a3a5c"/>
+  <rect x="430" y="285" width="220" height="16" fill="#1a3a5c"/>
+  <text x="540" y="289" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Nova Grade Entry</text>
+  <!-- Blue bar mockup -->
+  <rect x="430" y="301" width="220" height="20" fill="#005f99"/>
+  <text x="440" y="315" font-size="9" fill="white" font-weight="bold">⬇ Nova Sync</text>
+  <!-- Input cells -->
+  <rect x="438" y="328" width="204" height="8" rx="1" fill="#ebebeb"/>
+  <rect x="438" y="340" width="204" height="8" rx="1" fill="#f7f7f7"/>
+  <rect x="438" y="352" width="204" height="8" rx="1" fill="#ebebeb"/>
+  <text x="540" y="376" text-anchor="middle" font-size="11" fill="#1a3a5c" font-weight="bold">Grades filled here</text>
+
+  <!-- Arrow 2 -->
+  <g transform="translate(690,320)">
+    <path d="M0,10 Q40,0 80,10" fill="none" stroke="#2a7a2a" stroke-width="2.5"/>
+    <polygon points="76,5 86,10 76,15" fill="#2a7a2a"/>
+    <text x="40" y="35" text-anchor="middle" font-size="9" fill="#2a7a2a" font-weight="bold">Review &amp;</text>
+    <text x="40" y="47" text-anchor="middle" font-size="9" fill="#2a7a2a" font-weight="bold">Submit</text>
+  </g>
+
+  <!-- Result box -->
+  <rect x="802" y="280" width="76" height="100" rx="10" fill="white" filter="url(#cardShadow)"/>
+  <text x="840" y="326" text-anchor="middle" font-size="28" fill="#2a7a2a">✓</text>
+  <text x="840" y="352" text-anchor="middle" font-size="9" fill="#2a7a2a" font-weight="bold">Grades</text>
+  <text x="840" y="365" text-anchor="middle" font-size="9" fill="#2a7a2a" font-weight="bold">Saved</text>
+
+  <!-- Key point -->
+  <rect x="50" y="415" width="820" height="26" rx="6" fill="rgba(0,95,153,0.08)"/>
+  <text x="450" y="432" text-anchor="middle" font-size="12" fill="#005f99">
+    <tspan font-weight="bold">No data ever leaves your browser.</tspan>
+    <tspan> Grades travel: Moodle DOM → browser storage → Nova form fields. That's it.</tspan>
+  </text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 0: INSTALL & CONFIGURE                                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="450" width="900" height="280" fill="white"/>
+
+  <!-- Step badge -->
+  <circle cx="56" cy="496" r="22" fill="#005f99"/>
+  <text x="56" y="503" text-anchor="middle" font-size="18" font-weight="bold" fill="white">0</text>
+  <text x="90" y="490" font-size="20" font-weight="bold" fill="#005f99">Before You Start: Install &amp; Configure</text>
+  <text x="90" y="512" font-size="13" fill="#666">Only needed once. Takes about 2 minutes.</text>
+
+  <line x1="32" y1="528" x2="868" y2="528" stroke="#eee" stroke-width="1"/>
+
+  <!-- Install card -->
+  <rect x="32" y="540" width="400" height="170" rx="8" fill="#f8f9fa" filter="url(#cardShadow)"/>
+  <rect x="32" y="540" width="400" height="36" rx="8" fill="#333"/>
+  <rect x="32" y="558" width="400" height="18" fill="#333"/>
+  <text x="232" y="563" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Installing the Extension</text>
+
+  <text x="48" y="595" font-size="13" fill="#333">
+    <tspan font-weight="bold" fill="#005f99">1.</tspan> Open Chrome/Edge → address bar →
+  </text>
+  <rect x="268" y="580" width="148" height="20" rx="3" fill="#e8e8e8"/>
+  <text x="342" y="594" text-anchor="middle" font-size="11" fill="#333" font-family="monospace">chrome://extensions</text>
+
+  <text x="48" y="621" font-size="13" fill="#333">
+    <tspan font-weight="bold" fill="#005f99">2.</tspan> Enable <tspan font-weight="bold">Developer mode</tspan> (top-right toggle)
+  </text>
+  <text x="48" y="646" font-size="13" fill="#333">
+    <tspan font-weight="bold" fill="#005f99">3.</tspan> Click <tspan font-weight="bold">Load unpacked</tspan>
+  </text>
+  <text x="48" y="667" font-size="13" fill="#333">    → select the <tspan font-weight="bold">moodle-nova-sync-extension</tspan> folder</text>
+  <text x="48" y="688" font-size="13" fill="#333">
+    <tspan font-weight="bold" fill="#005f99">4.</tspan> Pin the extension to your toolbar 📌
+  </text>
+
+  <!-- Configure card -->
+  <rect x="452" y="540" width="416" height="170" rx="8" fill="#f8f9fa" filter="url(#cardShadow)"/>
+  <rect x="452" y="540" width="416" height="36" rx="8" fill="#005f99"/>
+  <rect x="452" y="558" width="416" height="18" fill="#005f99"/>
+  <text x="660" y="563" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Configuring Hostnames (Options page)</text>
+
+  <text x="468" y="595" font-size="13" fill="#333">
+    <tspan font-weight="bold" fill="#005f99">1.</tspan> Right-click the extension icon → <tspan font-weight="bold">Options</tspan>
+  </text>
+
+  <!-- Moodle field -->
+  <text x="468" y="620" font-size="12" fill="#555" font-weight="bold">Moodle address:</text>
+  <rect x="570" y="607" width="280" height="20" rx="3" fill="white" stroke="#bbb" stroke-width="1"/>
+  <text x="578" y="621" font-size="11" fill="#444" font-family="monospace">students.willisonline.ca</text>
+
+  <!-- Nova field -->
+  <text x="468" y="647" font-size="12" fill="#555" font-weight="bold">Nova address:</text>
+  <rect x="570" y="634" width="280" height="20" rx="3" fill="white" stroke="#bbb" stroke-width="1"/>
+  <text x="578" y="648" font-size="11" fill="#444" font-family="monospace">nova.williscollege.ca</text>
+
+  <text x="468" y="672" font-size="12" fill="#555" font-style="italic">Hostname only — no https:// or trailing slash</text>
+
+  <!-- Save button mockup -->
+  <rect x="468" y="682" width="100" height="22" rx="4" fill="#005f99"/>
+  <text x="518" y="697" text-anchor="middle" font-size="12" font-weight="bold" fill="white">Save Settings</text>
+  <text x="580" y="697" font-size="11" fill="#2a7a2a" font-weight="bold">✓ Reload Moodle &amp; Nova tabs after saving</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 1: CAPTURE FROM MOODLE                                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="730" width="900" height="420" fill="#fff8f4"/>
+
+  <!-- Left orange accent bar -->
+  <rect y="730" width="8" height="420" fill="url(#orangeGrad)"/>
+
+  <!-- Step badge -->
+  <circle cx="56" cy="778" r="22" fill="#e65c00"/>
+  <text x="56" y="785" text-anchor="middle" font-size="18" font-weight="bold" fill="white">1</text>
+  <text x="90" y="772" font-size="20" font-weight="bold" fill="#e65c00">Capture Grades from Moodle</text>
+  <text x="90" y="794" font-size="13" fill="#666">Navigate to the Moodle gradebook for your course.</text>
+
+  <line x1="32" y1="810" x2="868" y2="810" stroke="#f0ddd0" stroke-width="1"/>
+
+  <!-- Orange bar mockup - full width -->
+  <rect x="32" y="822" width="836" height="44" rx="6" fill="#e65c00" filter="url(#cardShadow)"/>
+  <text x="48" y="849" font-size="13" font-weight="bold" fill="white">📋 Moodle→Nova</text>
+  <!-- Dropdown mockup -->
+  <rect x="178" y="831" width="280" height="26" rx="3" fill="rgba(255,255,255,0.20)" stroke="rgba(255,255,255,0.40)" stroke-width="1"/>
+  <text x="186" y="849" font-size="11" fill="white">Assignment 1 total  ▾</text>
+  <!-- Buttons -->
+  <rect x="468" y="831" width="80" height="26" rx="3" fill="rgba(255,255,255,0.90)"/>
+  <text x="508" y="849" text-anchor="middle" font-size="12" font-weight="bold" fill="#e65c00">Capture</text>
+  <rect x="558" y="831" width="104" height="26" rx="3" fill="rgba(255,255,255,0.25)" stroke="rgba(255,255,255,0.60)" stroke-width="1"/>
+  <text x="610" y="849" text-anchor="middle" font-size="12" font-weight="bold" fill="white">Capture All</text>
+  <!-- Status -->
+  <text x="674" y="849" font-size="11" fill="rgba(255,255,255,0.88)">✓ Stored: "Assignment 1 total" · 24 students · just now</text>
+
+  <!-- Gradebook table mockup -->
+  <rect x="32" y="878" width="836" height="180" rx="6" fill="white" filter="url(#cardShadow)"/>
+  <!-- Table header -->
+  <rect x="32" y="878" width="836" height="28" rx="6" fill="#ebebeb"/>
+  <rect x="32" y="892" width="836" height="14" fill="#ebebeb"/>
+  <!-- Header text -->
+  <text x="42" y="896" font-size="10" fill="#333" font-weight="bold">First name</text>
+  <text x="122" y="896" font-size="10" fill="#333" font-weight="bold">Last name</text>
+  <text x="202" y="896" font-size="10" fill="#333" font-weight="bold">Email</text>
+  <text x="342" y="896" font-size="10" fill="#333" font-weight="bold">Assign 1</text>
+  <text x="402" y="896" font-size="10" fill="#333" font-weight="bold">Assign 2</text>
+  <text x="462" y="896" font-size="10" fill="#333" font-weight="bold">Assign 3</text>
+  <!-- Highlighted total column -->
+  <rect x="520" y="878" width="96" height="180" fill="#fff0d8"/>
+  <text x="522" y="896" font-size="10" fill="#9a3800" font-weight="bold">Assign 1 total ★</text>
+  <text x="630" y="896" font-size="10" fill="#333" font-weight="bold">Quiz 1</text>
+  <text x="690" y="896" font-size="10" fill="#333" font-weight="bold">Quiz 2</text>
+
+  <!-- Data rows -->
+  <g font-size="11" fill="#444">
+    <rect x="32" y="906" width="836" height="26" fill="white"/>
+    <text x="42" y="923">James</text><text x="122" y="923">Anderson</text>
+    <text x="342" y="923" text-anchor="middle">78</text><text x="402" y="923" text-anchor="middle">82</text><text x="462" y="923" text-anchor="middle">75</text>
+    <text x="568" y="923" text-anchor="middle" font-weight="bold" fill="#9a3800">78.3</text>
+    <text x="640" y="923" text-anchor="middle">88</text><text x="700" y="923" text-anchor="middle">90</text>
+
+    <rect x="32" y="932" width="836" height="26" fill="#f9f9f9"/>
+    <text x="42" y="949">Sarah</text><text x="122" y="949">Brown</text>
+    <text x="342" y="949" text-anchor="middle">92</text><text x="402" y="949" text-anchor="middle">88</text><text x="462" y="949" text-anchor="middle">95</text>
+    <text x="568" y="949" text-anchor="middle" font-weight="bold" fill="#9a3800">91.7</text>
+    <text x="640" y="949" text-anchor="middle">94</text><text x="700" y="949" text-anchor="middle">91</text>
+
+    <rect x="32" y="958" width="836" height="26" fill="white"/>
+    <text x="42" y="975">Michael</text><text x="122" y="975">Chen</text>
+    <text x="342" y="975" text-anchor="middle">65</text><text x="402" y="975" text-anchor="middle">70</text><text x="462" y="975" text-anchor="middle">68</text>
+    <text x="568" y="975" text-anchor="middle" font-weight="bold" fill="#9a3800">67.7</text>
+    <text x="640" y="975" text-anchor="middle">72</text><text x="700" y="975" text-anchor="middle">75</text>
+
+    <rect x="32" y="984" width="836" height="26" fill="#f9f9f9"/>
+    <text x="42" y="1001">Emily</text><text x="122" y="1001">Davis</text>
+    <text x="342" y="1001" text-anchor="middle">88</text><text x="402" y="1001" text-anchor="middle">85</text><text x="462" y="1001" text-anchor="middle">90</text>
+    <text x="568" y="1001" text-anchor="middle" font-weight="bold" fill="#9a3800">87.7</text>
+    <text x="640" y="1001" text-anchor="middle">92</text><text x="700" y="1001" text-anchor="middle">89</text>
+
+    <rect x="32" y="1010" width="836" height="26" fill="white"/>
+    <text x="42" y="1027">Robert</text><text x="122" y="1027">Foster</text>
+    <text x="342" y="1027" text-anchor="middle">55</text><text x="402" y="1027" text-anchor="middle">60</text><text x="462" y="1027" text-anchor="middle">58</text>
+    <text x="568" y="1027" text-anchor="middle" font-weight="bold" fill="#9a3800">57.7</text>
+    <text x="640" y="1027" text-anchor="middle">65</text><text x="700" y="1027" text-anchor="middle">62</text>
+  </g>
+
+  <!-- Numbered steps -->
+  <g transform="translate(32,1075)">
+    <g transform="translate(0,0)">
+      <circle cx="14" cy="14" r="14" fill="#e65c00"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">1</text>
+      <text x="36" y="13" font-size="13" fill="#333">Navigate to the <tspan font-weight="bold">Moodle gradebook</tspan> for your course</text>
+    </g>
+    <g transform="translate(0,32)">
+      <circle cx="14" cy="14" r="14" fill="#e65c00"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">2</text>
+      <text x="36" y="13" font-size="13" fill="#333">The <tspan font-weight="bold">orange bar</tspan> appears at the top of the page (click ▼ MNS to expand if collapsed)</text>
+    </g>
+    <g transform="translate(0,64)">
+      <circle cx="14" cy="14" r="14" fill="#e65c00"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">3</text>
+      <text x="36" y="13" font-size="13" fill="#333">Use the <tspan font-weight="bold">dropdown</tspan> to select the grade column — pick a <tspan fill="#9a3800" font-weight="bold">"total" column</tspan> for grouped activities</text>
+    </g>
+    <g transform="translate(0,96)">
+      <circle cx="14" cy="14" r="14" fill="#e65c00"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">4</text>
+      <text x="36" y="13" font-size="13" fill="#333">Click <tspan font-weight="bold">Capture</tspan> (one activity) or <tspan font-weight="bold">Capture All</tspan> (every activity at once)</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 2: FILL INTO NOVA                                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="1150" width="900" height="520" fill="#f4f8fc"/>
+  <rect y="1150" width="8" height="520" fill="url(#blueGrad)"/>
+
+  <circle cx="56" cy="1198" r="22" fill="#005f99"/>
+  <text x="56" y="1205" text-anchor="middle" font-size="18" font-weight="bold" fill="white">2</text>
+  <text x="90" y="1192" font-size="20" font-weight="bold" fill="#005f99">Fill Grades into Nova</text>
+  <text x="90" y="1214" font-size="13" fill="#666">Navigate to the Nova grade-entry page for the same course.</text>
+
+  <line x1="32" y1="1230" x2="868" y2="1230" stroke="#dde8f4" stroke-width="1"/>
+
+  <!-- Blue bar -->
+  <rect x="32" y="1242" width="836" height="44" rx="6" fill="#005f99" filter="url(#cardShadow)"/>
+  <text x="48" y="1269" font-size="13" font-weight="bold" fill="white">⬇ Nova Sync</text>
+  <rect x="158" y="1251" width="170" height="26" rx="3" fill="rgba(255,255,255,0.18)" stroke="rgba(255,255,255,0.35)" stroke-width="1"/>
+  <text x="166" y="1269" font-size="11" fill="white">Assignment 1  ▾</text>
+  <rect x="336" y="1251" width="78" height="26" rx="3" fill="rgba(255,255,255,0.90)"/>
+  <text x="375" y="1269" text-anchor="middle" font-size="12" font-weight="bold" fill="#005f99">Preview</text>
+  <rect x="422" y="1251" width="88" height="26" rx="3" fill="rgba(255,255,255,0.90)"/>
+  <text x="466" y="1269" text-anchor="middle" font-size="12" font-weight="bold" fill="#005f99">Fill Now</text>
+  <rect x="524" y="1251" width="80" height="26" rx="3" fill="rgba(255,255,200,0.30)" stroke="rgba(255,230,0,0.6)" stroke-width="1"/>
+  <text x="564" y="1269" text-anchor="middle" font-size="12" font-weight="bold" fill="white">Fill All</text>
+  <text x="620" y="1269" font-size="11" fill="rgba(255,255,255,0.80)">6 activities · 24 students · captured 5m ago</text>
+
+  <!-- Nova table mockup -->
+  <rect x="32" y="1298" width="836" height="220" rx="6" fill="white" filter="url(#cardShadow)"/>
+  <rect x="32" y="1298" width="836" height="26" rx="6" fill="#e0e0e0"/>
+  <rect x="32" y="1308" width="836" height="16" fill="#e0e0e0"/>
+  <g font-size="10" font-weight="bold" fill="#333">
+    <text x="40" y="1315">Course</text>
+    <text x="148" y="1315">Assessment</text>
+    <text x="284" y="1315">Type</text>
+    <text x="334" y="1315">Max</text>
+    <text x="374" y="1315">Wt</text>
+    <text x="420" y="1315">Anderson, J</text>
+    <text x="510" y="1315">Brown, S</text>
+    <text x="596" y="1315">Chen, M</text>
+    <text x="682" y="1315">Davis, E</text>
+    <text x="768" y="1315">Foster, R</text>
+  </g>
+
+  <!-- Highlighted selected row -->
+  <rect x="32" y="1324" width="836" height="38" fill="#fff3e0" stroke="#e65c00" stroke-width="1.5"/>
+  <!-- Other rows -->
+  <rect x="32" y="1362" width="836" height="38" fill="white"/>
+  <rect x="32" y="1400" width="836" height="38" fill="#f9f9f9"/>
+  <rect x="32" y="1438" width="836" height="38" fill="white"/>
+  <rect x="32" y="1476" width="836" height="38" fill="#f9f9f9"/>
+
+  <g font-size="11" fill="#333">
+    <!-- Row 1 - selected -->
+    <text x="40" y="1348" font-weight="bold">COMP1000</text>
+    <text x="148" y="1348" font-weight="bold" fill="#e65c00">Assignment 1</text>
+    <text x="284" y="1348">Assign</text><text x="334" y="1348">100</text><text x="374" y="1348">10%</text>
+    <!-- Input cells (filled) -->
+    <rect x="412" y="1330" width="86" height="24" rx="3" fill="#e8f5e9" stroke="#4caf50" stroke-width="1"/>
+    <text x="455" y="1346" text-anchor="middle" fill="#1a5e20" font-weight="bold">78.3</text>
+    <rect x="502" y="1330" width="82" height="24" rx="3" fill="#e8f5e9" stroke="#4caf50" stroke-width="1"/>
+    <text x="543" y="1346" text-anchor="middle" fill="#1a5e20" font-weight="bold">91.7</text>
+    <rect x="588" y="1330" width="82" height="24" rx="3" fill="#e8f5e9" stroke="#4caf50" stroke-width="1"/>
+    <text x="629" y="1346" text-anchor="middle" fill="#1a5e20" font-weight="bold">67.7</text>
+    <rect x="674" y="1330" width="82" height="24" rx="3" fill="#e8f5e9" stroke="#4caf50" stroke-width="1"/>
+    <text x="715" y="1346" text-anchor="middle" fill="#1a5e20" font-weight="bold">87.7</text>
+    <rect x="760" y="1330" width="82" height="24" rx="3" fill="#e8f5e9" stroke="#4caf50" stroke-width="1"/>
+    <text x="801" y="1346" text-anchor="middle" fill="#1a5e20" font-weight="bold">57.7</text>
+
+    <!-- Other rows -->
+    <text x="40" y="1386">COMP1000</text><text x="148" y="1386">Assignment 2</text>
+    <text x="40" y="1424">COMP1000</text><text x="148" y="1424">Quiz 1</text>
+    <text x="40" y="1462">COMP1000</text><text x="148" y="1462">Midterm</text>
+    <text x="40" y="1500">COMP1000</text><text x="148" y="1500">Final Exam</text>
+    <!-- Empty input cells -->
+    <rect x="412" y="1368" width="86" height="24" rx="3" fill="#f0f0f0" stroke="#ccc" stroke-width="0.5"/>
+    <rect x="412" y="1406" width="86" height="24" rx="3" fill="#f0f0f0" stroke="#ccc" stroke-width="0.5"/>
+    <rect x="412" y="1444" width="86" height="24" rx="3" fill="#f0f0f0" stroke="#ccc" stroke-width="0.5"/>
+    <rect x="412" y="1482" width="86" height="24" rx="3" fill="#f0f0f0" stroke="#ccc" stroke-width="0.5"/>
+  </g>
+
+  <!-- Numbered steps -->
+  <g transform="translate(32,1535)">
+    <g transform="translate(0,0)">
+      <circle cx="14" cy="14" r="14" fill="#005f99"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">1</text>
+      <text x="36" y="13" font-size="13" fill="#333">Navigate to the <tspan font-weight="bold">Nova grade-entry page</tspan> for the same course</text>
+    </g>
+    <g transform="translate(0,32)">
+      <circle cx="14" cy="14" r="14" fill="#005f99"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">2</text>
+      <text x="36" y="13" font-size="13" fill="#333">The <tspan font-weight="bold">blue bar</tspan> appears at the top — expand if needed by clicking ▼ MNS</text>
+    </g>
+    <g transform="translate(0,64)">
+      <circle cx="14" cy="14" r="14" fill="#005f99"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">3</text>
+      <text x="36" y="13" font-size="13" fill="#333">Click <tspan font-weight="bold">Preview</tspan> next to any row → verify student name matches and grade values</text>
+    </g>
+    <g transform="translate(0,96)">
+      <circle cx="14" cy="14" r="14" fill="#005f99"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">4</text>
+      <text x="36" y="13" font-size="13" fill="#333">Click <tspan font-weight="bold">Fill</tspan> → grade fields are populated for that row. Or click <tspan font-weight="bold">Fill All</tspan> for all rows at once.</text>
+    </g>
+    <g transform="translate(0,128)">
+      <circle cx="14" cy="14" r="14" fill="#005f99"/>
+      <text x="14" y="19" text-anchor="middle" font-size="13" font-weight="bold" fill="white">5</text>
+      <text x="36" y="13" font-size="13" fill="#333">A count is shown: <tspan font-weight="bold">✓ Filled 22 / 24</tspan>. Unmatched students appear in the browser console (F12).</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 3: REVIEW & SUBMIT                                                 -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="1670" width="900" height="180" fill="white"/>
+  <rect y="1670" width="8" height="180" fill="url(#greenGrad)"/>
+
+  <circle cx="56" cy="1718" r="22" fill="#2a7a2a"/>
+  <text x="56" y="1725" text-anchor="middle" font-size="18" font-weight="bold" fill="white">3</text>
+  <text x="90" y="1712" font-size="20" font-weight="bold" fill="#2a7a2a">Review Visually, Then Submit in Nova</text>
+  <text x="90" y="1734" font-size="13" fill="#666">The extension fills fields — you submit. Always do a spot-check first.</text>
+
+  <line x1="32" y1="1750" x2="868" y2="1750" stroke="#eee" stroke-width="1"/>
+
+  <!-- Warning box -->
+  <rect x="32" y="1762" width="836" height="72" rx="8" fill="#fff8e1" stroke="#ffe082" stroke-width="1.5"/>
+  <text x="58" y="1787" font-size="24">⚠</text>
+  <text x="90" y="1784" font-size="13" font-weight="bold" fill="#7a5500">The extension NEVER auto-submits grades.</text>
+  <text x="90" y="1805" font-size="13" fill="#7a5500">After filling, scroll through Nova's table and verify the grades look correct.</text>
+  <text x="90" y="1824" font-size="13" fill="#7a5500">Then click Nova's <tspan font-weight="bold">Save</tspan> button as you normally would. Unmatched students must be graded manually.</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- PREVIEW PANEL CALLOUT                                                   -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="1850" width="900" height="320" fill="#f4f8fc"/>
+
+  <text x="450" y="1888" text-anchor="middle" font-size="13" font-weight="bold" fill="#005f99" letter-spacing="2">PREVIEW PANEL — WHAT YOU SEE BEFORE FILLING</text>
+  <line x1="32" y1="1898" x2="868" y2="1898" stroke="#dde8f4" stroke-width="1"/>
+
+  <!-- Preview panel mockup -->
+  <rect x="32" y="1910" width="418" height="240" rx="8" fill="white" filter="url(#cardShadow)"/>
+  <rect x="32" y="1910" width="418" height="36" rx="8" fill="#005f99"/>
+  <rect x="32" y="1928" width="418" height="18" fill="#005f99"/>
+  <text x="242" y="1933" text-anchor="middle" font-size="13" font-weight="bold" fill="white">Preview — Assignment 1 (24 students)</text>
+
+  <!-- Activity picker -->
+  <rect x="44" y="1958" width="394" height="24" rx="3" fill="rgba(0,95,153,0.08)" stroke="#b3d9f7" stroke-width="1"/>
+  <text x="52" y="1951" font-size="11" fill="#005f99" font-weight="bold">Moodle activity to use:</text>
+  <text x="52" y="1974" font-size="11" fill="#333">Assignment 1 total  ▾</text>
+
+  <!-- Stats bar -->
+  <rect x="32" y="1990" width="418" height="24" fill="#f5f5f5" stroke="#ddd" stroke-width="0.5"/>
+  <text x="44" y="1006" font-size="11" fill="#333"/>
+  <text x="44" y="2006" font-size="11" fill="#333">✓ 22 exact   ⚠ 2 fuzzy match   ✗ 0 unmatched</text>
+
+  <!-- Preview rows -->
+  <g font-size="11">
+    <rect x="32" y="2014" width="418" height="22" fill="#f0fff0"/>
+    <text x="44" y="2028" fill="#1a7a3a" font-weight="bold">✓</text>
+    <text x="64" y="2028" fill="#333">Anderson, James</text>
+    <text x="244" y="2028" fill="#555">James Anderson</text>
+    <text x="390" y="2028" fill="#333" font-weight="bold">78.3</text>
+
+    <rect x="32" y="2036" width="418" height="22" fill="#fffbe6"/>
+    <text x="44" y="2050" fill="#7a5500" font-weight="bold">⚠</text>
+    <text x="64" y="2050" fill="#333">O'Brien, Fiona</text>
+    <text x="244" y="2050" fill="#555">Fiona O Brien</text>
+    <text x="390" y="2050" fill="#333" font-weight="bold">72.0</text>
+
+    <rect x="32" y="2058" width="418" height="22" fill="#f0fff0"/>
+    <text x="44" y="2072" fill="#1a7a3a" font-weight="bold">✓</text>
+    <text x="64" y="2072" fill="#333">Brown, Sarah</text>
+    <text x="244" y="2072" fill="#555">Sarah Brown</text>
+    <text x="390" y="2072" fill="#333" font-weight="bold">91.7</text>
+
+    <rect x="32" y="2080" width="418" height="22" fill="#fffbe6"/>
+    <text x="44" y="2094" fill="#7a5500" font-weight="bold">⚠</text>
+    <text x="64" y="2094" fill="#333">Hassan-Ali, Yusuf</text>
+    <text x="244" y="2094" fill="#555">Yusuf Hassan Ali</text>
+    <text x="390" y="2094" fill="#333" font-weight="bold">84.3</text>
+  </g>
+
+  <!-- Fill button -->
+  <rect x="44" y="2108" width="394" height="32" rx="5" fill="#2a7a2a"/>
+  <text x="241" y="2128" text-anchor="middle" font-size="13" font-weight="bold" fill="white">✓  Fill 22 grades into "Assignment 1"</text>
+
+  <!-- Legend -->
+  <g transform="translate(470,1910)">
+    <text x="0" y="22" font-size="13" font-weight="bold" fill="#333">Reading the colour codes:</text>
+    <rect x="0" y="34" width="380" height="28" rx="4" fill="#f0fff0" stroke="#4caf50" stroke-width="1"/>
+    <text x="12" y="52" font-size="12" fill="#1a7a3a">✓  Green row — student name matched exactly</text>
+
+    <rect x="0" y="70" width="380" height="28" rx="4" fill="#fffbe6" stroke="#ffe082" stroke-width="1"/>
+    <text x="12" y="88" font-size="12" fill="#7a5500">⚠  Yellow row — fuzzy match (check the name carefully)</text>
+
+    <rect x="0" y="106" width="380" height="28" rx="4" fill="#fde8e8" stroke="#f44336" stroke-width="1"/>
+    <text x="12" y="124" font-size="12" fill="#c62828">✗  Red row — no match found (fill manually in Nova)</text>
+
+    <text x="0" y="156" font-size="13" font-weight="bold" fill="#333">Moodle activity dropdown:</text>
+    <rect x="0" y="168" width="380" height="46" rx="4" fill="#f0f8ff" stroke="#b3d9f7" stroke-width="1"/>
+    <text x="12" y="185" font-size="12" fill="#333">The auto-selected activity is the best name match.</text>
+    <text x="12" y="203" font-size="12" fill="#333">You can change it manually from the dropdown if needed.</text>
+
+    <text x="0" y="234" font-size="13" font-weight="bold" fill="#333">Unmatched students:</text>
+    <rect x="0" y="246" width="380" height="46" rx="4" fill="white" stroke="#ddd" stroke-width="1"/>
+    <text x="12" y="263" font-size="12" fill="#333">Open F12 → Console tab — unmatched students</text>
+    <text x="12" y="281" font-size="12" fill="#333">are listed by name for manual follow-up in Nova.</text>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- TROUBLESHOOTING                                                          -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="2170" width="900" height="232" fill="white"/>
+
+  <text x="450" y="2208" text-anchor="middle" font-size="13" font-weight="bold" fill="#333" letter-spacing="2">TROUBLESHOOTING QUICK-REFERENCE</text>
+  <line x1="32" y1="2218" x2="868" y2="2218" stroke="#eee" stroke-width="1"/>
+
+  <!-- 3-column trouble table -->
+  <g font-size="12">
+    <!-- Headers -->
+    <rect x="32" y="2226" width="836" height="24" fill="#f0f0f0"/>
+    <text x="44" y="2242" font-weight="bold" fill="#333">Symptom</text>
+    <text x="358" y="2242" font-weight="bold" fill="#333">Most likely cause</text>
+    <text x="618" y="2242" font-weight="bold" fill="#333">Fix</text>
+    <line x1="350" y1="2226" x2="350" y2="2390" stroke="#ddd" stroke-width="0.5"/>
+    <line x1="610" y1="2226" x2="610" y2="2390" stroke="#ddd" stroke-width="0.5"/>
+
+    <!-- Row 1 -->
+    <rect x="32" y="2250" width="836" height="32" fill="#fafafa"/>
+    <text x="44" y="2271" fill="#333">Orange/blue bar not showing</text>
+    <text x="358" y="2271" fill="#555">Hostname not configured</text>
+    <text x="618" y="2271" fill="#005f99">Options page → check hostnames → Save → reload tab</text>
+
+    <!-- Row 2 -->
+    <rect x="32" y="2282" width="836" height="32" fill="white"/>
+    <text x="44" y="2303" fill="#333">Capture shows 0 students</text>
+    <text x="358" y="2303" fill="#555">Moodle HTML selectors changed</text>
+    <text x="618" y="2303" fill="#005f99">F12 → Console → look for mns- errors → contact author</text>
+
+    <!-- Row 3 -->
+    <rect x="32" y="2314" width="836" height="32" fill="#fafafa"/>
+    <text x="44" y="2335" fill="#333">Fill shows 0 matches</text>
+    <text x="358" y="2335" fill="#555">No captured data / wrong course</text>
+    <text x="618" y="2335" fill="#005f99">Capture from Moodle first; check blue bar shows timestamp</text>
+
+    <!-- Row 4 -->
+    <rect x="32" y="2346" width="836" height="32" fill="white"/>
+    <text x="44" y="2367" fill="#333">Student not matched</text>
+    <text x="358" y="2367" fill="#555">Name too different between systems</text>
+    <text x="618" y="2367" fill="#005f99">F12 → Console for name list; fill manually in Nova</text>
+
+    <!-- Row 5 -->
+    <rect x="32" y="2378" width="836" height="32" fill="#fafafa"/>
+    <text x="44" y="2399" fill="#333">Wrong grade mapping per course</text>
+    <text x="358" y="2399" fill="#555">Multiple activities map to one Nova row</text>
+    <text x="618" y="2399" fill="#005f99">Options → Course Mappings JSON → define per-course rules</text>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- FOOTER                                                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <rect y="2410" width="900" height="50" fill="url(#hdrGrad)"/>
+  <text x="450" y="2432" text-anchor="middle" font-size="12" fill="rgba(255,255,255,0.70)">Moodle → Nova Grade Sync  v4.6.0  ·  All data stays in your browser  ·  No external servers</text>
+  <text x="450" y="2452" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.50)">Support: Bunmi Oke — bunmi.oke@williscollege.ca  ·  itisbunmioke@gmail.com</text>
+</svg>

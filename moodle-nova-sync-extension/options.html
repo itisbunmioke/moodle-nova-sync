@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Moodle → Nova Grade Sync — Settings</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif; max-width: 580px; margin: 40px auto;
+      padding: 0 20px; color: #333; background: #f9f9f9;
+    }
+    h1 { font-size: 20px; color: #005f99; border-bottom: 2px solid #005f99; padding-bottom: 8px; }
+    .section { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 20px; margin-bottom: 20px; }
+    .section h2 { font-size: 14px; margin: 0 0 14px; color: #e65c00; text-transform: uppercase; letter-spacing: .5px; }
+    label { display: block; font-size: 13px; font-weight: bold; margin-bottom: 4px; }
+    .hint { font-size: 11px; color: #777; margin-bottom: 10px; }
+    input[type="text"], input[type="number"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #bbb; border-radius: 4px;
+      font-size: 13px; box-sizing: border-box; margin-bottom: 14px;
+    }
+    input[type="text"]:focus, input[type="number"]:focus {
+      outline: none; border-color: #005f99; box-shadow: 0 0 0 2px #cce5ff;
+    }
+    textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid #bbb; border-radius: 4px;
+      font-size: 12px; font-family: monospace; box-sizing: border-box;
+      margin-bottom: 14px; resize: vertical;
+    }
+    textarea:focus { outline: none; border-color: #005f99; box-shadow: 0 0 0 2px #cce5ff; }
+    button {
+      background: #005f99; color: #fff; border: none; border-radius: 4px;
+      padding: 10px 24px; font-size: 14px; font-weight: bold; cursor: pointer;
+    }
+    button:hover { background: #004a7a; }
+    #status {
+      display: none; margin-top: 12px; padding: 8px 12px; border-radius: 4px;
+      font-size: 13px; font-weight: bold;
+    }
+    .ok  { background: #d4edda; color: #155724; }
+    .err { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <h1>Moodle → Nova Grade Sync — Settings</h1>
+  <p style="font-size:13px;color:#555">
+    Enter your college's web addresses below. You only need to do this once.
+    Ask your IT department if you are unsure what to enter.
+  </p>
+
+  <div class="section">
+    <h2>College Hostnames</h2>
+
+    <label for="moodleHost">Moodle address</label>
+    <div class="hint">
+      Copy from your browser's address bar when on any Moodle page —
+      use only the part between <b>https://</b> and the next <b>/</b>.<br>
+      Example: <code>moodle.yourcollege.edu</code>
+    </div>
+    <input type="text" id="moodleHost" placeholder="e.g. moodle.yourcollege.edu" spellcheck="false">
+
+    <label for="novaHost">Nova address</label>
+    <div class="hint">
+      Same idea — the address bar on your Nova grade-entry page.<br>
+      Example: <code>nova.yourcollege.edu</code>
+    </div>
+    <input type="text" id="novaHost" placeholder="e.g. nova.yourcollege.edu" spellcheck="false">
+  </div>
+
+  <div class="section">
+    <h2>Advanced — Nova Table Layout</h2>
+    <p style="font-size:12px;color:#777;margin-top:0">
+      Only change these if grades are not being detected correctly.
+      Leave them as-is if the tool works for you.
+    </p>
+
+    <label for="fixedColCount">Fixed column count</label>
+    <div class="hint">Number of non-student columns that appear before the student columns in Nova's grade table. Default: 5</div>
+    <input type="number" id="fixedColCount" min="0" max="20" value="5">
+
+    <label for="assessmentCell">Assessment name column index</label>
+    <div class="hint">Which column (counting from 0) holds the assessment/row name. Default: 1</div>
+    <input type="number" id="assessmentCell" min="0" max="10" value="1">
+  </div>
+
+  <div class="section">
+    <h2>Course Mappings</h2>
+    <p style="font-size:12px;color:#777;margin-top:0">
+      For courses where Moodle groups several activities into one Nova row (e.g. Assignments 1–6 average
+      appears as "Assignment 1 total" in Moodle but as "Assignment 1" in Nova), specify the mapping here.
+      Courses that use 1:1 name matching do <b>not</b> need an entry — leave them out entirely.
+    </p>
+
+    <label for="courseMappings">Mappings (JSON)</label>
+    <div class="hint">
+      Key = Nova course name (partial match OK). Value = object mapping Nova row names to the exact
+      Moodle column name that holds the grade for that row.<br><br>
+      Example:<br>
+      <code style="font-size:11px;white-space:pre">{
+  "Introduction to Computing": {
+    "Assignment 1": "Assignment 1 total",
+    "Assignment 2": "Assignment 2 total",
+    "Quiz 1": "Quiz 1 total",
+    "Quiz 2": "Quiz 2 total"
+  }
+}</code>
+    </div>
+    <textarea id="courseMappings" rows="10" spellcheck="false" placeholder="{}" style="min-height:120px"></textarea>
+  </div>
+
+  <button id="save">Save Settings</button>
+  <div id="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>
