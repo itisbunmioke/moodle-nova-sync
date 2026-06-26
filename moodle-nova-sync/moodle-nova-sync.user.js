@@ -637,17 +637,29 @@
                unmatched: matches.filter(m => !m.match).length };
     }
 
-    // Waits until the observed element stops receiving DOM mutations for `quiesceMs`.
-    // Used to detect when Nova finishes recalculating its running score totals.
-    function waitForTableToSettle(tableEl, quiesceMs = 500, timeoutMs = 10000) {
+    // Finds the Nova "Score:" row — the row whose first cell is exactly "Score:".
+    // That row holds the weighted percentage totals that auto-calculate after grades are entered.
+    function findScoreRow(tableEl) {
+      if (!tableEl) return null;
+      for (const row of tableEl.querySelectorAll('tr')) {
+        const first = row.querySelector('td, th');
+        if (first && first.textContent.trim() === 'Score:') return row;
+      }
+      return null;
+    }
+
+    // Waits until the Score: row (or the full table as fallback) stops receiving
+    // DOM mutations for quiesceMs — meaning Nova's weighted-score calculation has settled.
+    function waitForScoreRowToSettle(tableEl, quiesceMs = 700, timeoutMs = 12000) {
+      const targetEl = findScoreRow(tableEl) || tableEl;
       return new Promise(resolve => {
-        if (!tableEl) { setTimeout(resolve, quiesceMs); return; }
+        if (!targetEl) { setTimeout(resolve, quiesceMs); return; }
         let timer = setTimeout(() => { observer.disconnect(); resolve(); }, quiesceMs);
         const observer = new MutationObserver(() => {
           clearTimeout(timer);
           timer = setTimeout(() => { observer.disconnect(); resolve(); }, quiesceMs);
         });
-        observer.observe(tableEl, { subtree: true, childList: true, characterData: true, attributes: true });
+        observer.observe(targetEl, { subtree: true, childList: true, characterData: true, attributes: true });
         setTimeout(() => { clearTimeout(timer); observer.disconnect(); resolve(); }, timeoutMs);
       });
     }
@@ -1052,7 +1064,7 @@
       mnsProgress.update(matches.length, matches.length);
 
       mnsProgressSettle('Calculating scores…');
-      await waitForTableToSettle(assessmentRow.row.closest('table'));
+      await waitForScoreRowToSettle(assessmentRow.row.closest('table'));
       mnsProgressDone();
 
       if (result.filled > 0) showUndoBtn(result.filled);
@@ -1314,7 +1326,7 @@
 
         mnsProgressSettle('Calculating scores…');
         const stuTableEl = parsed.assessmentRows[0]?.row.closest('table');
-        await waitForTableToSettle(stuTableEl);
+        await waitForScoreRowToSettle(stuTableEl);
         mnsProgressDone();
 
         if (filled > 0) showUndoBtn(filled);
@@ -1463,7 +1475,7 @@
 
         mnsProgressSettle('Calculating scores…');
         const faTableEl = rowsToFill[0]?.assessmentRow.row.closest('table');
-        await waitForTableToSettle(faTableEl);
+        await waitForScoreRowToSettle(faTableEl);
         mnsProgressDone();
 
         if (totalFilled > 0) showUndoBtn(totalFilled);
