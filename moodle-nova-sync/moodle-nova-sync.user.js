@@ -9,6 +9,8 @@
 // @grant        GM_getValue
 // @grant        GM_notification
 // @grant        GM_addStyle
+// @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-nova-sync/moodle-nova-sync.user.js
+// @downloadURL  https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-nova-sync/moodle-nova-sync.user.js
 // ==/UserScript==
 // @ts-nocheck
 
