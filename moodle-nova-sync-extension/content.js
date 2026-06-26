@@ -420,25 +420,27 @@
       #mns-progress-label { font-size: 13px; font-weight: bold; margin-bottom: 9px;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #mns-progress-track {
-        position: relative; height: 20px; border-radius: 99px;
-        background: rgba(255,255,255,0.14);
-        box-shadow: inset 0 2px 4px rgba(0,0,0,0.35); overflow: hidden;
+        position: relative; height: 22px; border-radius: 99px;
+        background: rgba(255,255,255,0.13);
+        box-shadow: inset 0 2px 6px rgba(0,0,0,0.45); overflow: hidden;
       }
       #mns-progress-fill {
-        height: 100%; width: 0%; border-radius: 99px;
-        background: linear-gradient(90deg,#ff8c00,#ffd700);
+        position: absolute; top: 0; left: 0; height: 100%; width: 0%;
+        background: linear-gradient(90deg, #c94400 0%, #ff7e00 38%, #ffc200 100%);
         transition: width 0.12s linear;
         animation: mns-pb-glow 1.3s ease-in-out infinite;
       }
       @keyframes mns-pb-glow {
-        0%, 100% { box-shadow: 0 0 8px rgba(255,180,0,0.55); }
-        50%       { box-shadow: 0 0 22px rgba(255,215,60,0.95); }
+        0%, 100% { box-shadow: 0 0 8px rgba(255,160,0,0.55); }
+        50%       { box-shadow: 0 0 24px rgba(255,200,50,0.95); }
       }
       #mns-progress-pct {
-        position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
-        font-size: 11px; font-weight: 800; color: #fff; letter-spacing: 0.03em;
-        text-shadow: 0 1px 4px rgba(0,0,0,0.85); pointer-events: none; z-index: 1;
-        white-space: nowrap;
+        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 900; color: #fff; letter-spacing: 0.04em;
+        font-family: system-ui, sans-serif;
+        text-shadow: 0 0 8px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,0.85);
+        pointer-events: none; z-index: 2; white-space: nowrap;
       }
       #mns-progress-count { font-size: 11px; opacity: 0.72; margin-top: 6px; text-align: right; }
       /* ── End-of-task summary dialog ────────────────────────────────── */
@@ -616,29 +618,31 @@
       return null;
     }
 
-    // Start a MutationObserver on the Score: row BEFORE filling begins so
-    // mutations that fire synchronously during cell writes are captured.
-    // Returns { promise, scoreRow } — promise resolves when mutations quiesce.
-    // Polls the Score: row's text content every pollMs; resolves once the text
-    // has not changed for stableMs. Started BEFORE fill so the pre-fill snapshot
-    // is accurate. More reliable than MutationObserver because it directly tracks
-    // whether cell values have stopped changing, regardless of Nova's update path.
-    function createScoreSettleWatcher(tableEl, pollMs = 250, stableMs = 2000, timeoutMs = 25000) {
+    // Polls Score: row text every pollMs. Resolves ONLY when:
+    //   • at least one text change has been observed (Nova started recalculating), AND
+    //   • text has been stable for stableMs since the last change.
+    // If no change is ever seen (grades produced identical scores), a minWaitMs floor
+    // prevents declaring done before Nova has even started recalculating.
+    function createScoreSettleWatcher(tableEl, pollMs = 200, stableMs = 2500, minWaitMs = 3000, timeoutMs = 30000) {
       const scoreRow = findScoreRow(tableEl);
       const targetEl = scoreRow || tableEl;
       if (!targetEl) return { promise: new Promise(r => setTimeout(r, stableMs)), scoreRow: null };
       let resolveSettle;
       const promise = new Promise(r => { resolveSettle = r; });
       const snap = () => targetEl.textContent;
+      const startTime = performance.now();
       let lastSnap = snap();
-      let lastChangeAt = performance.now();
+      let lastChangeAt = startTime;
+      let hasEverChanged = false;
       let pollTimer;
       const hardTimeout = setTimeout(() => { clearTimeout(pollTimer); resolveSettle(); }, timeoutMs);
       function check() {
         const now = performance.now();
         const current = snap();
-        if (current !== lastSnap) { lastSnap = current; lastChangeAt = now; }
-        if (now - lastChangeAt >= stableMs) { clearTimeout(hardTimeout); resolveSettle(); return; }
+        if (current !== lastSnap) { lastSnap = current; lastChangeAt = now; hasEverChanged = true; }
+        const canResolve = (hasEverChanged || now - startTime >= minWaitMs)
+                        && (now - lastChangeAt >= stableMs);
+        if (canResolve) { clearTimeout(hardTimeout); resolveSettle(); return; }
         pollTimer = setTimeout(check, pollMs);
       }
       pollTimer = setTimeout(check, pollMs);
@@ -1051,7 +1055,7 @@
 
       // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
       document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
-      const cancelAnim = animateBar(85, 99, 3000, pct => mnsProgressSetPct(pct));
+      const cancelAnim = animateBar(85, 99, 5000, pct => mnsProgressSetPct(pct));
 
       await settlePromise;
       cancelAnim();
@@ -1312,7 +1316,7 @@
 
         // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
         document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
-        const cancelAnim = animateBar(85, 99, 3000, pct => mnsProgressSetPct(pct));
+        const cancelAnim = animateBar(85, 99, 5000, pct => mnsProgressSetPct(pct));
 
         await settlePromise;
         cancelAnim();
@@ -1470,7 +1474,7 @@
 
         // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
         document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
-        const cancelAnim = animateBar(85, 99, 3000, pct => mnsProgressSetPct(pct));
+        const cancelAnim = animateBar(85, 99, 5000, pct => mnsProgressSetPct(pct));
 
         await settlePromise;
         cancelAnim();
