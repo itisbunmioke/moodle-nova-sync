@@ -427,8 +427,12 @@
       #mns-progress-fill {
         height: 100%; width: 0%; border-radius: 99px;
         background: linear-gradient(90deg,#ff8c00,#ffd700);
-        transition: width 0.10s ease-out;
-        box-shadow: 0 0 10px rgba(255,180,0,0.60);
+        transition: width 0.12s linear;
+        animation: mns-pb-glow 1.3s ease-in-out infinite;
+      }
+      @keyframes mns-pb-glow {
+        0%, 100% { box-shadow: 0 0 8px rgba(255,180,0,0.55); }
+        50%       { box-shadow: 0 0 22px rgba(255,215,60,0.95); }
       }
       #mns-progress-count { font-size: 11px; opacity: 0.72; margin-top: 6px; text-align: right; }
       /* ── End-of-task summary dialog ────────────────────────────────── */
@@ -606,7 +610,10 @@
     // Start a MutationObserver on the Score: row BEFORE filling begins so
     // mutations that fire synchronously during cell writes are captured.
     // Returns { promise, scoreRow } — promise resolves when mutations quiesce.
-    function createScoreSettleWatcher(tableEl, quiesceMs = 700, timeoutMs = 12000) {
+    // Start a MutationObserver BEFORE filling begins so synchronous Score: mutations
+    // triggered inside fillRowAsync are captured. Promise resolves when mutations
+    // quiesce for 1500 ms (or hard timeout at 20 s).
+    function createScoreSettleWatcher(tableEl, quiesceMs = 1500, timeoutMs = 20000) {
       const scoreRow = findScoreRow(tableEl);
       const targetEl = scoreRow || tableEl;
       if (!targetEl) return { promise: new Promise(r => setTimeout(r, quiesceMs)), scoreRow: null };
@@ -622,14 +629,22 @@
       return { promise, scoreRow };
     }
 
-    // Count Score: cells (at the given column indices) that have a computed value.
-    function countFilledScoreCells(scoreRow, colIndices) {
-      if (!scoreRow || !colIndices.length) return 0;
-      const cells = scoreRow.querySelectorAll('td, th');
-      return colIndices.filter(i => {
-        const txt = cells[i]?.textContent.trim();
-        return txt && txt !== '-' && txt !== '—';
-      }).length;
+    // Smoothly animate the bar from fromPct to toPct over durationMs using RAF.
+    // Returns a cancel function; once cancelled the bar stays at its current position.
+    // The bar is capped at toPct so it never jumps to 100% before the observer quiesces.
+    function animateBar(fromPct, toPct, durationMs, onTick) {
+      let rafId, cancelled = false;
+      const t0 = performance.now();
+      function tick(now) {
+        if (cancelled) return;
+        const elapsed = Math.min(now - t0, durationMs);
+        const linear = elapsed / durationMs;
+        const eased = linear * linear * (3 - 2 * linear); // smooth-step
+        onTick(fromPct + (toPct - fromPct) * eased);
+        if (elapsed < durationMs) rafId = requestAnimationFrame(tick);
+      }
+      rafId = requestAnimationFrame(tick);
+      return () => { cancelled = true; cancelAnimationFrame(rafId); };
     }
 
     function flash(text, color = '#2a7a2a', ms = 7000) {
@@ -1018,17 +1033,14 @@
         mnsProgressSetPct(Math.round((done / matches.length) * 85), `${done} / ${matches.length}`);
       });
 
-      // Phase 2: bar 85 → 100% in step with Score: cells populating
+      // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
       document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
-      const scoreInterval = (scoreRow && colIndices.length) ? setInterval(() => {
-        const n = countFilledScoreCells(scoreRow, colIndices);
-        mnsProgressSetPct(85 + Math.round((n / colIndices.length) * 15), `${n} / ${colIndices.length} scores`);
-      }, 80) : null;
+      const cancelAnim = animateBar(85, 99, 3000, pct => mnsProgressSetPct(pct));
 
       await settlePromise;
-      if (scoreInterval) clearInterval(scoreInterval);
+      cancelAnim();
       mnsProgressSetPct(100, '✓ Done');
-      await new Promise(r => setTimeout(r, 250));
+      await new Promise(r => setTimeout(r, 300));
       mnsProgress.hide();
 
       if (result.filled > 0) showUndoBtn(result.filled);
@@ -1282,17 +1294,14 @@
           if (processed % 4 === 0) await new Promise(r => setTimeout(r, 0));
         }
 
-        // Phase 2: 85 → 100% as Score: cell for this student updates
+        // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
         document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
-        const scoreInterval = (scoreRow && colIndices.length) ? setInterval(() => {
-          const n = countFilledScoreCells(scoreRow, colIndices);
-          mnsProgressSetPct(85 + Math.round((n / colIndices.length) * 15), `${n} / ${colIndices.length} scores`);
-        }, 80) : null;
+        const cancelAnim = animateBar(85, 99, 3000, pct => mnsProgressSetPct(pct));
 
         await settlePromise;
-        if (scoreInterval) clearInterval(scoreInterval);
+        cancelAnim();
         mnsProgressSetPct(100, '✓ Done');
-        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => setTimeout(r, 300));
         mnsProgress.hide();
 
         if (filled > 0) showUndoBtn(filled);
@@ -1443,17 +1452,14 @@
           totalUnmatched   += result.unmatched;
         }
 
-        // Phase 2: bar 85 → 100% as all Score: cells populate
+        // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
         document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
-        const scoreInterval = (scoreRow && colIndices.length) ? setInterval(() => {
-          const n = countFilledScoreCells(scoreRow, colIndices);
-          mnsProgressSetPct(85 + Math.round((n / colIndices.length) * 15), `${n} / ${colIndices.length} scores`);
-        }, 80) : null;
+        const cancelAnim = animateBar(85, 99, 3000, pct => mnsProgressSetPct(pct));
 
         await settlePromise;
-        if (scoreInterval) clearInterval(scoreInterval);
+        cancelAnim();
         mnsProgressSetPct(100, '✓ Done');
-        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => setTimeout(r, 300));
         mnsProgress.hide();
 
         if (totalFilled > 0) showUndoBtn(totalFilled);
