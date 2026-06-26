@@ -407,7 +407,7 @@
       .mns-filled { background: #d4f5d4 !important; }
       /* ── Glassmorphic progress bar ─────────────────────────────────── */
       #mns-progress {
-        display: none; position: fixed; bottom: 28px; left: 50%;
+        display: none; position: fixed; top: 50px; left: 50%;
         transform: translateX(-50%); z-index: 999999; min-width: 360px;
         background: linear-gradient(135deg,rgba(4,18,72,0.86),rgba(0,55,115,0.86));
         backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
@@ -420,7 +420,7 @@
       #mns-progress-label { font-size: 13px; font-weight: bold; margin-bottom: 9px;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #mns-progress-track {
-        height: 11px; border-radius: 99px;
+        position: relative; height: 20px; border-radius: 99px;
         background: rgba(255,255,255,0.14);
         box-shadow: inset 0 2px 4px rgba(0,0,0,0.35); overflow: hidden;
       }
@@ -433,6 +433,12 @@
       @keyframes mns-pb-glow {
         0%, 100% { box-shadow: 0 0 8px rgba(255,180,0,0.55); }
         50%       { box-shadow: 0 0 22px rgba(255,215,60,0.95); }
+      }
+      #mns-progress-pct {
+        position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+        font-size: 11px; font-weight: 800; color: #fff; letter-spacing: 0.03em;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.85); pointer-events: none; z-index: 1;
+        white-space: nowrap;
       }
       #mns-progress-count { font-size: 11px; opacity: 0.72; margin-top: 6px; text-align: right; }
       /* ── End-of-task summary dialog ────────────────────────────────── */
@@ -512,7 +518,7 @@
     progressEl.id = 'mns-progress';
     progressEl.innerHTML =
       '<div id="mns-progress-label">Filling grades…</div>' +
-      '<div id="mns-progress-track"><div id="mns-progress-fill"></div></div>' +
+      '<div id="mns-progress-track"><div id="mns-progress-fill"></div><span id="mns-progress-pct">0%</span></div>' +
       '<div id="mns-progress-count"></div>';
     document.body.appendChild(progressEl);
 
@@ -524,6 +530,7 @@
       show(label) {
         document.getElementById('mns-progress-label').textContent = label;
         document.getElementById('mns-progress-fill').style.width = '0%';
+        document.getElementById('mns-progress-pct').textContent = '0%';
         document.getElementById('mns-progress-count').textContent = '';
         progressEl.style.display = 'block';
       },
@@ -531,7 +538,9 @@
     };
 
     function mnsProgressSetPct(pct, countText) {
-      document.getElementById('mns-progress-fill').style.width = Math.min(pct, 100) + '%';
+      const p = Math.min(pct, 100);
+      document.getElementById('mns-progress-fill').style.width = p + '%';
+      document.getElementById('mns-progress-pct').textContent = Math.round(p) + '%';
       if (countText != null) document.getElementById('mns-progress-count').textContent = countText;
     }
 
@@ -610,22 +619,29 @@
     // Start a MutationObserver on the Score: row BEFORE filling begins so
     // mutations that fire synchronously during cell writes are captured.
     // Returns { promise, scoreRow } — promise resolves when mutations quiesce.
-    // Start a MutationObserver BEFORE filling begins so synchronous Score: mutations
-    // triggered inside fillRowAsync are captured. Promise resolves when mutations
-    // quiesce for 1500 ms (or hard timeout at 20 s).
-    function createScoreSettleWatcher(tableEl, quiesceMs = 1500, timeoutMs = 20000) {
+    // Polls the Score: row's text content every pollMs; resolves once the text
+    // has not changed for stableMs. Started BEFORE fill so the pre-fill snapshot
+    // is accurate. More reliable than MutationObserver because it directly tracks
+    // whether cell values have stopped changing, regardless of Nova's update path.
+    function createScoreSettleWatcher(tableEl, pollMs = 250, stableMs = 2000, timeoutMs = 25000) {
       const scoreRow = findScoreRow(tableEl);
       const targetEl = scoreRow || tableEl;
-      if (!targetEl) return { promise: new Promise(r => setTimeout(r, quiesceMs)), scoreRow: null };
+      if (!targetEl) return { promise: new Promise(r => setTimeout(r, stableMs)), scoreRow: null };
       let resolveSettle;
       const promise = new Promise(r => { resolveSettle = r; });
-      let quiesceTimer = setTimeout(() => { observer.disconnect(); resolveSettle(); }, quiesceMs);
-      const observer = new MutationObserver(() => {
-        clearTimeout(quiesceTimer);
-        quiesceTimer = setTimeout(() => { observer.disconnect(); resolveSettle(); }, quiesceMs);
-      });
-      observer.observe(targetEl, { subtree: true, childList: true, characterData: true, attributes: true });
-      setTimeout(() => { clearTimeout(quiesceTimer); observer.disconnect(); resolveSettle(); }, timeoutMs);
+      const snap = () => targetEl.textContent;
+      let lastSnap = snap();
+      let lastChangeAt = performance.now();
+      let pollTimer;
+      const hardTimeout = setTimeout(() => { clearTimeout(pollTimer); resolveSettle(); }, timeoutMs);
+      function check() {
+        const now = performance.now();
+        const current = snap();
+        if (current !== lastSnap) { lastSnap = current; lastChangeAt = now; }
+        if (now - lastChangeAt >= stableMs) { clearTimeout(hardTimeout); resolveSettle(); return; }
+        pollTimer = setTimeout(check, pollMs);
+      }
+      pollTimer = setTimeout(check, pollMs);
       return { promise, scoreRow };
     }
 
