@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      1.1.3
+// @version      1.1.4
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -20,7 +20,7 @@
   // ── API endpoints ────────────────────────────────────────────────────────
   /** @param {string} key @param {string} model */
   const GEMINI_ENDPOINT = (key, model) =>
-    `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   const CLAUDE_ENDPOINT = 'https://api.anthropic.com/v1/messages';
   const CLAUDE_MODEL    = 'claude-haiku-4-5-20251001';
   const GEMINI_DEFAULT  = 'gemini-2.0-flash';
@@ -620,7 +620,7 @@ Write 3-5 sentences of feedback for the student. Requirements:
       <div class="mag-field">
         <label>Gemini model</label>
         <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.0-flash">
-        <div class="mag-hint">Default: gemini-2.0-flash. Update here if Google retires the model.</div>
+        <div class="mag-hint">Default: gemini-2.0-flash. Fallback: gemini-1.5-flash. Update here if Google retires the model.</div>
       </div>
       <div class="mag-field">
         <label>Claude API Key (optional — for higher-quality feedback)</label>
