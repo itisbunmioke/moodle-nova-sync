@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      1.1.2
+// @version      1.1.3
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -18,10 +18,12 @@
   'use strict';
 
   // ── API endpoints ────────────────────────────────────────────────────────
-  const GEMINI_ENDPOINT = key =>
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
+  /** @param {string} key @param {string} model */
+  const GEMINI_ENDPOINT = (key, model) =>
+    `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
   const CLAUDE_ENDPOINT = 'https://api.anthropic.com/v1/messages';
   const CLAUDE_MODEL    = 'claude-haiku-4-5-20251001';
+  const GEMINI_DEFAULT  = 'gemini-2.0-flash';
 
   // ── Settings ─────────────────────────────────────────────────────────────
   const get = (k, d = '') => { const v = GM_getValue('mag_' + k); return v !== undefined ? v : d; };
@@ -29,6 +31,7 @@
 
   const CFG = {
     get geminiKey()           { return get('gemini_key'); },
+    get geminiModel()         { return get('gemini_model', GEMINI_DEFAULT); },
     get claudeKey()           { return get('claude_key'); },
     get useClaudeForFeedback(){ return get('claude_feedback', 'true') === 'true'; },
     get instructorName()      { return get('instructor_name', 'Instructor'); },
@@ -361,7 +364,7 @@ Write 3-5 sentences of feedback for the student. Requirements:
     if (inlineData) parts.push({ inlineData });
 
     const body = JSON.stringify({ contents: [{ parts }] });
-    const r = await xhr('POST', GEMINI_ENDPOINT(key), {
+    const r = await xhr('POST', GEMINI_ENDPOINT(key, CFG.geminiModel), {
       headers: { 'Content-Type': 'application/json' },
       body,
     });
@@ -615,6 +618,11 @@ Write 3-5 sentences of feedback for the student. Requirements:
         <div class="mag-hint">Get free key at <strong>aistudio.google.com</strong> → Get API key</div>
       </div>
       <div class="mag-field">
+        <label>Gemini model</label>
+        <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.0-flash">
+        <div class="mag-hint">Default: gemini-2.0-flash. Update here if Google retires the model.</div>
+      </div>
+      <div class="mag-field">
         <label>Claude API Key (optional — for higher-quality feedback)</label>
         <input type="password" id="mag-s-claude" placeholder="sk-ant-...">
         <div class="mag-hint">Leave blank to use Gemini for both grading and feedback.</div>
@@ -642,8 +650,9 @@ Write 3-5 sentences of feedback for the student. Requirements:
   document.body.appendChild(settingsOverlay);
 
   function openSettings() {
-    document.getElementById('mag-s-gemini').value   = CFG.geminiKey;
-    document.getElementById('mag-s-claude').value   = CFG.claudeKey;
+    document.getElementById('mag-s-gemini').value       = CFG.geminiKey;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value = CFG.geminiModel;
+    document.getElementById('mag-s-claude').value       = CFG.claudeKey;
     document.getElementById('mag-s-use-claude').checked = CFG.useClaudeForFeedback;
     document.getElementById('mag-s-name').value     = CFG.instructorName;
     document.getElementById('mag-s-style').value    = CFG.instructorStyle;
@@ -655,7 +664,8 @@ Write 3-5 sentences of feedback for the student. Requirements:
   document.getElementById('mag-settings-btn').onclick = openSettings;
   document.getElementById('mag-s-cancel').onclick     = closeSettings;
   document.getElementById('mag-s-save').onclick = () => {
-    set('gemini_key',      document.getElementById('mag-s-gemini').value.trim());
+    set('gemini_key',      /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini')).value.trim());
+    set('gemini_model',    (/** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value.trim()) || GEMINI_DEFAULT);
     set('claude_key',      document.getElementById('mag-s-claude').value.trim());
     set('claude_feedback', document.getElementById('mag-s-use-claude').checked ? 'true' : 'false');
     set('instructor_name', document.getElementById('mag-s-name').value.trim() || 'Instructor');
