@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      1.0.0
+// @version      1.1.0
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -37,13 +37,8 @@
   };
 
   // ── Page detection ───────────────────────────────────────────────────────
-  const params       = new URL(location.href).searchParams;
-  const pageAction   = params.get('action') || '';
-  const assignId     = params.get('id')     || '';
-  const IS_LIST      = pageAction === 'grading';
-  const IS_GRADE_PG  = pageAction === 'grade';
-
-  if (!IS_LIST && !IS_GRADE_PG) return;
+  const assignId = new URL(location.href).searchParams.get('id') || '';
+  if (!assignId) return; // show toolbar on any assign page that has an id= param
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const $ = s => document.querySelector(s);
@@ -184,34 +179,56 @@
     return criteria;
   }
 
-  // Parse list of students and their submission file URLs from the grading list page
+  // Scans the page for student grade links — works on any Moodle theme/version
   function parseStudentList(doc = document) {
     const students = [];
-    // Each row in the submissions table
-    const rows = doc.querySelectorAll('table#mod_assign_grading tbody tr, .submissions-table tbody tr');
-    for (const row of rows) {
-      // Get user id from the grade/view link
-      const gradeLink = row.querySelector('a[href*="action=grade"], a[href*="action=view"]');
-      if (!gradeLink) continue;
-      const uid = new URL(gradeLink.href).searchParams.get('userid');
-      if (!uid) continue;
+    const seen = new Set();
 
-      // Name
-      const nameEl = row.querySelector('.c1 a, .cell.c1 a, [data-col="fullname"] a');
-      const name   = nameEl ? nameEl.textContent.trim() : `Student ${uid}`;
+    // Any link containing userid= on an assign page is a student link
+    const allLinks = /** @type {HTMLAnchorElement[]} */([...doc.querySelectorAll('a[href*="userid="]')])
+      .filter(a => { try { return a.href.includes('mod/assign'); } catch { return false; } });
 
-      // Submission file links (pluginfile.php)
-      const fileLinks = [...row.querySelectorAll('a[href*="pluginfile.php"]')].map(a => ({
-        url:      a.href,
-        filename: decodeURIComponent(a.href.split('/').pop().split('?')[0]),
-      }));
+    for (const link of allLinks) {
+      let uid;
+      try { uid = new URL(link.href).searchParams.get('userid'); } catch { continue; }
+      if (!uid || seen.has(uid)) continue;
+      seen.add(uid);
 
-      // Online text submissions (if no file links)
-      const onlineText = !fileLinks.length
-        ? (row.querySelector('.submissionstatuscell, [data-col="submission"]')?.innerText || '').trim()
-        : null;
+      // Canonical grade URL using the current page's assignment id
+      const gradeUrl = `${location.origin}/mod/assign/view.php?id=${assignId}&userid=${uid}&action=grade`;
 
-      students.push({ uid, name, gradeLink: gradeLink.href, fileLinks, onlineText });
+      // Resolve student name from context
+      let name = '';
+      const row = link.closest('tr');
+      if (row) {
+        const profileLink = row.querySelector('a[href*="user/view.php"]');
+        if (profileLink) name = profileLink.textContent.trim();
+      }
+      if (!name) {
+        const t = link.textContent.trim();
+        if (t && t.length > 2 && t.length < 80 &&
+            !['grade', 'view', 'edit', 'update', 'submit'].some(v => t.toLowerCase() === v)) {
+          name = t;
+        }
+      }
+      if (!name && row) {
+        for (const td of row.querySelectorAll('td')) {
+          const t = td.textContent.trim().split('\n')[0].trim();
+          if (t && t.length > 2 && t.length < 80) { name = t; break; }
+        }
+      }
+      if (!name) name = `Student ${uid}`;
+
+      // Collect any file links already visible in the row (often absent on list pages)
+      /** @type {{url: string, filename: string}[]} */
+      const fileLinks = [];
+      if (row) {
+        /** @type {NodeListOf<HTMLAnchorElement>} */(row.querySelectorAll('a[href*="pluginfile.php"]')).forEach(a => {
+          fileLinks.push({ url: a.href, filename: decodeURIComponent((a.href.split('/').pop() || '').split('?')[0]) });
+        });
+      }
+
+      students.push({ uid, name, gradeLink: gradeUrl, fileLinks, onlineText: null });
     }
     return students;
   }
@@ -222,6 +239,22 @@
     const parser  = new DOMParser();
     const gradeDoc = parser.parseFromString(r.responseText, 'text/html');
     return parseRubric(gradeDoc);
+  }
+
+  // Fetch a student's grade page and return their submission file links + any inline text.
+  // Called per-student when files aren't visible on the list page.
+  /** @param {{ gradeLink: string }} student */
+  async function fetchStudentFiles(student) {
+    const r   = await xhr('GET', student.gradeLink);
+    const doc = new DOMParser().parseFromString(r.responseText, 'text/html');
+    const fileLinks = /** @type {HTMLAnchorElement[]} */([...doc.querySelectorAll('a[href*="pluginfile.php"]')])
+      .map(a => ({ url: a.href, filename: decodeURIComponent((a.href.split('/').pop() || '').split('?')[0]) }));
+    let onlineText = null;
+    if (!fileLinks.length) {
+      const textEl = doc.querySelector('.submissiontext, [data-region="assign-submission-text"], .onlinetext');
+      if (textEl) onlineText = /** @type {HTMLElement} */(textEl).innerText?.trim() || null;
+    }
+    return { fileLinks, onlineText };
   }
 
   // ── AI prompts ───────────────────────────────────────────────────────────
@@ -779,7 +812,7 @@ Write 3-5 sentences of feedback for the student. Requirements:
     const students     = parseStudentList();
 
     if (!students.length) {
-      setStatus('No students found. Are you on the grading list page?', '#ff9060');
+      setStatus('No student links found — navigate to the Submissions tab.', '#ff9060');
       return;
     }
 
@@ -810,8 +843,14 @@ Write 3-5 sentences of feedback for the student. Requirements:
         let submissionText = student.onlineText || '';
         let inlineData     = null;
 
-        if (student.fileLinks.length) {
-          const file = student.fileLinks[0]; // grade first (primary) file
+        let fileLinks = student.fileLinks;
+        if (!fileLinks.length) {
+          const fetched = await fetchStudentFiles(student);
+          fileLinks = fetched.fileLinks;
+          if (!submissionText && fetched.onlineText) submissionText = fetched.onlineText;
+        }
+        if (fileLinks.length) {
+          const file = fileLinks[0];
           const extracted = await extractSubmission(file.url, file.filename);
           submissionText = extracted.text || '';
           inlineData     = extracted.inlineData;
@@ -846,7 +885,7 @@ Write 3-5 sentences of feedback for the student. Requirements:
     const students     = parseStudentList();
 
     if (!students.length) {
-      setStatus('No students found.', '#ff9060');
+      setStatus('No student links found — navigate to the Submissions tab.', '#ff9060');
       return;
     }
 
@@ -875,8 +914,14 @@ Write 3-5 sentences of feedback for the student. Requirements:
       try {
         let submissionText = student.onlineText || '';
         let inlineData     = null;
-        if (student.fileLinks.length) {
-          const file = student.fileLinks[0];
+        let fileLinks = student.fileLinks;
+        if (!fileLinks.length) {
+          const fetched = await fetchStudentFiles(student);
+          fileLinks = fetched.fileLinks;
+          if (!submissionText && fetched.onlineText) submissionText = fetched.onlineText;
+        }
+        if (fileLinks.length) {
+          const file = fileLinks[0];
           const extracted = await extractSubmission(file.url, file.filename);
           submissionText = extracted.text || '';
           inlineData     = extracted.inlineData;
