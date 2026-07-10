@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      1.1.0
+// @version      1.1.2
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -19,7 +19,7 @@
 
   // ── API endpoints ────────────────────────────────────────────────────────
   const GEMINI_ENDPOINT = key =>
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${key}`;
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
   const CLAUDE_ENDPOINT = 'https://api.anthropic.com/v1/messages';
   const CLAUDE_MODEL    = 'claude-haiku-4-5-20251001';
 
