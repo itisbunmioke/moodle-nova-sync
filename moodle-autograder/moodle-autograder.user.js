@@ -137,6 +137,29 @@
     return el ? el.innerText.trim() : '(No instructions found on page)';
   }
 
+  // Always fetches the Assignment tab page (no action= param) so title + instructions
+  // are available regardless of which tab the user is currently on.
+  async function fetchAssignmentDetails() {
+    const assignUrl = `${location.origin}/mod/assign/view.php?id=${assignId}`;
+    try {
+      const r   = await xhr('GET', assignUrl);
+      const doc = new DOMParser().parseFromString(r.responseText, 'text/html');
+
+      const instrEl = doc.querySelector('.activity-description, .assign-intro, [data-region="assign-intro"]');
+      const instructions = instrEl
+        ? /** @type {HTMLElement} */(instrEl).innerText.trim()
+        : '(No instructions found on assignment page)';
+
+      const titleEl = doc.querySelector('h1') || doc.querySelector('h2');
+      const title   = titleEl ? titleEl.textContent.trim() : 'Assignment';
+
+      return { title, instructions };
+    } catch {
+      // If fetch fails fall back to what's on the current page
+      return { title: parseAssignmentTitle(), instructions: parseAssignmentInstructions() };
+    }
+  }
+
   // Parse Moodle Advanced Grading Rubric from the DOM of a grade page
   function parseRubric(doc = document) {
     const criteria = [];
@@ -807,9 +830,8 @@ Write 3-5 sentences of feedback for the student. Requirements:
     } catch (e) { setStatus('⚠ ' + e.message, '#ff9060'); return; }
 
     setStatus('Reading assignment…', '#c9a0ff');
-    const title        = parseAssignmentTitle();
-    const instructions = parseAssignmentInstructions();
-    const students     = parseStudentList();
+    const { title, instructions } = await fetchAssignmentDetails();
+    const students                = parseStudentList();
 
     if (!students.length) {
       setStatus('No student links found — navigate to the Submissions tab.', '#ff9060');
@@ -880,9 +902,8 @@ Write 3-5 sentences of feedback for the student. Requirements:
     } catch (e) { setStatus('⚠ ' + e.message, '#ff9060'); return; }
 
     setStatus('Reading assignment…', '#c9a0ff');
-    const title        = parseAssignmentTitle();
-    const instructions = parseAssignmentInstructions();
-    const students     = parseStudentList();
+    const { title, instructions } = await fetchAssignmentDetails();
+    const students                = parseStudentList();
 
     if (!students.length) {
       setStatus('No student links found — navigate to the Submissions tab.', '#ff9060');
