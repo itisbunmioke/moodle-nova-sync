@@ -392,8 +392,9 @@ Write 3-5 sentences of feedback for the student. Requirements:
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body,
     });
+    if (r.status === 0) throw new Error(`Groq: request blocked before reaching server (status 0) — check @connect permission`);
     const data = JSON.parse(r.responseText);
-    if (data.error) throw new Error(`Groq error: ${data.error.message}`);
+    if (data.error) throw new Error(`Groq [HTTP ${r.status}]: ${data.error.message}`);
     return data.choices?.[0]?.message?.content || '';
   }
 
