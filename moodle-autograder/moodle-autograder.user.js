@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      1.1.4
+// @version      1.2.0
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -9,7 +9,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
-// @connect      generativelanguage.googleapis.com
+// @connect      api.groq.com
 // @connect      api.anthropic.com
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // ==/UserScript==
@@ -18,20 +18,18 @@
   'use strict';
 
   // ── API endpoints ────────────────────────────────────────────────────────
-  /** @param {string} key @param {string} model */
-  const GEMINI_ENDPOINT = (key, model) =>
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  const GROQ_ENDPOINT   = 'https://api.groq.com/openai/v1/chat/completions';
   const CLAUDE_ENDPOINT = 'https://api.anthropic.com/v1/messages';
   const CLAUDE_MODEL    = 'claude-haiku-4-5-20251001';
-  const GEMINI_DEFAULT  = 'gemini-2.0-flash';
+  const GROQ_DEFAULT    = 'llama-3.3-70b-versatile';
 
   // ── Settings ─────────────────────────────────────────────────────────────
   const get = (k, d = '') => { const v = GM_getValue('mag_' + k); return v !== undefined ? v : d; };
   const set = (k, v)      => GM_setValue('mag_' + k, v);
 
   const CFG = {
-    get geminiKey()           { return get('gemini_key'); },
-    get geminiModel()         { return get('gemini_model', GEMINI_DEFAULT); },
+    get groqKey()             { return get('groq_key'); },
+    get groqModel()           { return get('groq_model', GROQ_DEFAULT); },
     get claudeKey()           { return get('claude_key'); },
     get useClaudeForFeedback(){ return get('claude_feedback', 'true') === 'true'; },
     get instructorName()      { return get('instructor_name', 'Instructor'); },
@@ -356,21 +354,23 @@ Write 3-5 sentences of feedback for the student. Requirements:
   }
 
   // ── AI callers ───────────────────────────────────────────────────────────
-  async function callGemini(promptText, inlineData = null) {
-    const key = CFG.geminiKey;
-    if (!key) throw new Error('Gemini API key not configured.');
-
-    const parts = [{ text: promptText }];
-    if (inlineData) parts.push({ inlineData });
-
-    const body = JSON.stringify({ contents: [{ parts }] });
-    const r = await xhr('POST', GEMINI_ENDPOINT(key, CFG.geminiModel), {
-      headers: { 'Content-Type': 'application/json' },
+  /** @param {string} promptText */
+  async function callGroq(promptText) {
+    const key = CFG.groqKey;
+    if (!key) throw new Error('Groq API key not configured.');
+    const body = JSON.stringify({
+      model:       CFG.groqModel,
+      messages:    [{ role: 'user', content: promptText }],
+      max_tokens:  2048,
+      temperature: 0.3,
+    });
+    const r = await xhr('POST', GROQ_ENDPOINT, {
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body,
     });
     const data = JSON.parse(r.responseText);
-    if (data.error) throw new Error(`Gemini error: ${data.error.message}`);
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (data.error) throw new Error(`Groq error: ${data.error.message}`);
+    return data.choices?.[0]?.message?.content || '';
   }
 
   async function callClaude(promptText) {
@@ -401,16 +401,19 @@ Write 3-5 sentences of feedback for the student. Requirements:
   }
 
   async function gradeSubmission(title, instructions, rubric, submissionText, inlineData) {
-    const gradingPrompt = buildGradingPrompt(title, instructions, rubric, submissionText);
-    const gradingRaw    = await callGemini(gradingPrompt, inlineData);
+    // Groq is text-only; PDFs arrive as inlineData with no text — note it in the prompt
+    const effectiveText = submissionText
+      || (inlineData ? '[PDF submission — grade on rubric criteria based on any context available]' : '');
+    const gradingPrompt = buildGradingPrompt(title, instructions, rubric, effectiveText);
+    const gradingRaw    = await callGroq(gradingPrompt);
     const grading       = parseGradingJSON(gradingRaw);
 
-    const useClaude   = CFG.useClaudeForFeedback && CFG.claudeKey;
-    const feedPrompt  = buildFeedbackPrompt(
-      title, instructions, rubric, submissionText,
+    const useClaude  = CFG.useClaudeForFeedback && CFG.claudeKey;
+    const feedPrompt = buildFeedbackPrompt(
+      title, instructions, rubric, effectiveText,
       grading.scores, CFG.instructorName, CFG.instructorStyle
     );
-    const feedback = useClaude ? await callClaude(feedPrompt) : await callGemini(feedPrompt);
+    const feedback = useClaude ? await callClaude(feedPrompt) : await callGroq(feedPrompt);
 
     return { scores: grading.scores, totalPoints: grading.totalPoints, overallComment: grading.overallComment, feedback: feedback.trim() };
   }
@@ -613,19 +616,19 @@ Write 3-5 sentences of feedback for the student. Requirements:
     <div id="mag-settings-box">
       <h2>⚙ Moodle AutoGrader Settings</h2>
       <div class="mag-field">
-        <label>Gemini API Key (free — for rubric scoring)</label>
-        <input type="password" id="mag-s-gemini" placeholder="AIza...">
-        <div class="mag-hint">Get free key at <strong>aistudio.google.com</strong> → Get API key</div>
+        <label>Groq API Key (free — for rubric scoring &amp; feedback)</label>
+        <input type="password" id="mag-s-groq" placeholder="gsk_...">
+        <div class="mag-hint">Free key: <strong>console.groq.com</strong> → API Keys → Create. No billing required.</div>
       </div>
       <div class="mag-field">
-        <label>Gemini model</label>
-        <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.0-flash">
-        <div class="mag-hint">Default: gemini-2.0-flash. Fallback: gemini-1.5-flash. Update here if Google retires the model.</div>
+        <label>Groq model</label>
+        <input type="text" id="mag-s-groq-model" placeholder="llama-3.3-70b-versatile">
+        <div class="mag-hint">Default: llama-3.3-70b-versatile. Alt: llama-3.1-8b-instant (faster, lighter).</div>
       </div>
       <div class="mag-field">
-        <label>Claude API Key (optional — for higher-quality feedback)</label>
+        <label>Claude API Key (optional — for higher-quality feedback comments)</label>
         <input type="password" id="mag-s-claude" placeholder="sk-ant-...">
-        <div class="mag-hint">Leave blank to use Gemini for both grading and feedback.</div>
+        <div class="mag-hint">Leave blank to use Groq for both grading and feedback.</div>
       </div>
       <div class="mag-field">
         <label><input type="checkbox" id="mag-s-use-claude"> Use Claude for feedback comments (if key provided)</label>
@@ -650,8 +653,8 @@ Write 3-5 sentences of feedback for the student. Requirements:
   document.body.appendChild(settingsOverlay);
 
   function openSettings() {
-    document.getElementById('mag-s-gemini').value       = CFG.geminiKey;
-    /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value = CFG.geminiModel;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value       = CFG.groqKey;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value  = CFG.groqModel;
     document.getElementById('mag-s-claude').value       = CFG.claudeKey;
     document.getElementById('mag-s-use-claude').checked = CFG.useClaudeForFeedback;
     document.getElementById('mag-s-name').value     = CFG.instructorName;
@@ -664,8 +667,8 @@ Write 3-5 sentences of feedback for the student. Requirements:
   document.getElementById('mag-settings-btn').onclick = openSettings;
   document.getElementById('mag-s-cancel').onclick     = closeSettings;
   document.getElementById('mag-s-save').onclick = () => {
-    set('gemini_key',      /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini')).value.trim());
-    set('gemini_model',    (/** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value.trim()) || GEMINI_DEFAULT);
+    set('groq_key',   /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value.trim());
+    set('groq_model', (/** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value.trim()) || GROQ_DEFAULT);
     set('claude_key',      document.getElementById('mag-s-claude').value.trim());
     set('claude_feedback', document.getElementById('mag-s-use-claude').checked ? 'true' : 'false');
     set('instructor_name', document.getElementById('mag-s-name').value.trim() || 'Instructor');
@@ -827,9 +830,9 @@ Write 3-5 sentences of feedback for the student. Requirements:
 
   // ── Guard: check API keys ─────────────────────────────────────────────────
   function assertKeys() {
-    if (!CFG.geminiKey) {
+    if (!CFG.groqKey) {
       openSettings();
-      throw new Error('Please configure your Gemini API key in Settings first.');
+      throw new Error('Please configure your Groq API key in Settings first.');
     }
   }
 
@@ -1001,8 +1004,8 @@ Write 3-5 sentences of feedback for the student. Requirements:
   document.getElementById('mag-grade-all').onclick = () => runGradeAll().catch(e => setStatus('⚠ ' + e.message, '#ff9060'));
 
   // Show first-run prompt if no keys configured
-  if (!CFG.geminiKey) {
-    setStatus('First run — configure API keys in ⚙ Settings.', '#ffb060');
+  if (!CFG.groqKey) {
+    setStatus('First run — add Groq API key in ⚙ Settings.', '#ffb060');
   } else {
     setStatus('Ready.', '#80d0a0');
   }
