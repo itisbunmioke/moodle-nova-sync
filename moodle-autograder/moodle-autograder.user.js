@@ -389,7 +389,12 @@ Write 3-5 sentences of feedback for the student. Requirements:
       temperature: 0.3,
     });
     const r = await xhr('POST', GROQ_ENDPOINT, {
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+        'Origin':  location.origin,
+        'Referer': location.href,
+      },
       body,
     });
     if (r.status === 0) throw new Error(`Groq: request blocked before reaching server (status 0) — check @connect permission`);
