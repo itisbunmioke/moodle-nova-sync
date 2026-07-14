@@ -1,3 +1,6 @@
+# AutoGrader lives in its own private repo — never commit here
+moodle-autograder/
+
 # Build artifacts
 *.zip
 *.crx
