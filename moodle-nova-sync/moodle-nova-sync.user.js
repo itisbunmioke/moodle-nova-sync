@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.7.6
+// @version      4.8.0
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
@@ -434,6 +434,7 @@
       .mns-ok  { background: #f0fff0; }
       .mns-fuz { background: #fffbe6; }
       .mns-no  { background: #fff0f0; }
+      .mns-sug { background: #eef0ff; }
       #mns-go {
         display: block; width: calc(100% - 16px); margin: 8px; padding: 8px;
         color: #fff; font-weight: bold; font-size: 13px;
@@ -626,7 +627,7 @@
     async function fillRowAsync(matches, skipExisting, onProgress) {
       let filled = 0, skippedExisting = 0, skippedNoGrade = 0, noInput = 0, processed = 0;
       for (const m of matches) {
-        if (!m.match) { processed++; }
+        if (!m.match || m.match.type === 'suggestion') { processed++; }
         else {
           const grade = m.match.student.grade;
           if (!grade)    { skippedNoGrade++; processed++; }
@@ -641,11 +642,10 @@
         if (processed % 4 === 0) await new Promise(r => setTimeout(r, 0));
       }
       return { filled, skippedExisting, skippedNoGrade, noInput,
-               unmatched: matches.filter(m => !m.match).length };
+               unmatched: matches.filter(m => !m.match || m.match.type === 'suggestion').length };
     }
 
     // Finds the Nova "Score:" row — the row whose first cell is exactly "Score:".
-    // That row holds the weighted percentage totals that auto-calculate after grades are entered.
     function findScoreRow(tableEl) {
       if (!tableEl) return null;
       for (const row of tableEl.querySelectorAll('tr')) {
@@ -655,36 +655,32 @@
       return null;
     }
 
-    // Start a MutationObserver on the Score: row BEFORE filling begins so
-    // Polls Score: row text every pollMs. Resolves ONLY when:
-    //   • at least one text change has been observed (Nova started recalculating), AND
-    //   • text has been stable for stableMs since the last change.
-    // If no change is ever seen (grades produced identical scores), a minWaitMs floor
-    // prevents declaring done before Nova has even started recalculating.
-    function createScoreSettleWatcher(tableEl, pollMs = 200, stableMs = 2500, minWaitMs = 3000, timeoutMs = 30000) {
-      const scoreRow = findScoreRow(tableEl);
-      const targetEl = scoreRow || tableEl;
-      if (!targetEl) return { promise: new Promise(r => setTimeout(r, stableMs)), scoreRow: null };
-      let resolveSettle;
-      const promise = new Promise(r => { resolveSettle = r; });
-      const snap = () => targetEl.textContent;
-      const startTime = performance.now();
-      let lastSnap = snap();
-      let lastChangeAt = startTime;
-      let hasEverChanged = false;
-      let pollTimer;
-      const hardTimeout = setTimeout(() => { clearTimeout(pollTimer); resolveSettle(); }, timeoutMs);
-      function check() {
-        const now = performance.now();
-        const current = snap();
-        if (current !== lastSnap) { lastSnap = current; lastChangeAt = now; hasEverChanged = true; }
-        const canResolve = (hasEverChanged || now - startTime >= minWaitMs)
-                        && (now - lastChangeAt >= stableMs);
-        if (canResolve) { clearTimeout(hardTimeout); resolveSettle(); return; }
-        pollTimer = setTimeout(check, pollMs);
-      }
-      pollTimer = setTimeout(check, pollMs);
-      return { promise, scoreRow };
+    // Waits for Nova to finish recalculating scores after grade inputs are filled.
+    // Called AFTER fillRowAsync so our own input.value writes don't trigger the observer —
+    // only Nova's own DOM reactions (score cells, style updates) are watched.
+    // Resolves when no DOM mutation is seen for stableMs, or minWaitMs passes with no change.
+    function waitForNova(tableEl, stableMs = 2000, minWaitMs = 3000, timeoutMs = 30000) {
+      const watchEl = findScoreRow(tableEl) || tableEl;
+      if (!watchEl) return Promise.resolve();
+      return new Promise(resolve => {
+        let debounceTimer = null;
+        let hasSeenMutation = false;
+        function finish() {
+          observer.disconnect();
+          clearTimeout(debounceTimer);
+          clearTimeout(minWaitTimer);
+          clearTimeout(hardTimeout);
+          resolve();
+        }
+        const observer = new MutationObserver(() => {
+          hasSeenMutation = true;
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(finish, stableMs);
+        });
+        observer.observe(watchEl, { childList: true, subtree: true, characterData: true });
+        const minWaitTimer = setTimeout(() => { if (!hasSeenMutation) finish(); }, minWaitMs);
+        const hardTimeout = setTimeout(finish, timeoutMs);
+      });
     }
 
     // Smoothly animate the bar from fromPct to toPct over durationMs using RAF.
@@ -787,9 +783,11 @@
         const sim = nameSimilarity(key, mKey);
         if (sim > bestSim) { bestSim = sim; best = s; }
       }
-      // ≥95% treated as a confident match; 75–94% flagged as fuzzy (⚠ in preview)
+      // ≥95% treated as a confident match; 75–94% flagged as fuzzy (⚠ in preview);
+      // <75% shown as a suggestion (❓) in preview only — never auto-filled.
       if (bestSim >= 0.95) return { student: best, type: 'exact' };
       if (bestSim >= 0.75) return { student: best, type: 'fuzzy', sim: bestSim };
+      if (best)            return { student: best, type: 'suggestion', sim: bestSim };
       return null;
     }
 
@@ -946,7 +944,7 @@
     function fillRow(matches, skipExisting) {
       let filled = 0, skippedExisting = 0, skippedNoGrade = 0, noInput = 0;
       matches.forEach(m => {
-        if (!m.match) return;
+        if (!m.match || m.match.type === 'suggestion') return;
         const grade = m.match.student.grade;
         if (!grade) { skippedNoGrade++; return; }
         if (!m.input) { noInput++; return; }
@@ -956,7 +954,7 @@
       });
       return {
         filled, skippedExisting, skippedNoGrade, noInput,
-        unmatched: matches.filter(m => !m.match).length,
+        unmatched: matches.filter(m => !m.match || m.match.type === 'suggestion').length,
       };
     }
 
@@ -1091,19 +1089,18 @@
       hideUndoBtn();
 
       const tableEl = assessmentRow.row.closest('table');
-      const colIndices = parsed_studentCols_cache.map(c => c.colIndex);
-      const { promise: settlePromise, scoreRow } = createScoreSettleWatcher(tableEl);
 
       mnsProgress.show(`Filling "${rowLabel}"…`);
       const result = await fillRowAsync(matches, skipExisting, done => {
         mnsProgressSetPct(Math.round((done / matches.length) * 85), `${done} / ${matches.length}`);
       });
 
-      // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
+      // Phase 2: MutationObserver started AFTER filling so only Nova's own DOM
+      // reactions (score recalculation, cell updates) trigger the settle wait.
       document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
       const cancelAnim = animateBar(85, 99, 5000, pct => mnsProgressSetPct(pct));
 
-      await settlePromise;
+      await waitForNova(tableEl);
       cancelAnim();
       mnsProgressSetPct(100, '✓ Done');
       await new Promise(r => setTimeout(r, 300));
@@ -1164,15 +1161,18 @@
       resolveAndOpen(assessmentRow, activities, (autoKey, pickerHtml) => {
         const actKey = autoKey;
         const matches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[actKey]);
-        const matched = matches.filter(m => m.match).length;
+        const matched = matches.filter(m => m.match && m.match.type !== 'suggestion').length;
         const alreadyFilled = matches.filter(m => m.input && m.input.value.trim() !== '').length;
 
         const rows = matches.map(m => {
           const existing = m.input ? m.input.value.trim() : '';
-          const cls  = !m.match ? 'mns-no' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
-          const icon = !m.match ? '❌' : m.match.type === 'fuzzy' ? '⚠' : '✓';
-          const grade = m.match ? (m.match.student.grade || '—') : '—';
-          const mName = m.match ? m.match.student.name : 'Not found';
+          const isSug = m.match?.type === 'suggestion';
+          const cls  = !m.match ? 'mns-no' : isSug ? 'mns-sug' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
+          const icon = !m.match ? '❌' : isSug ? '❓' : m.match.type === 'fuzzy' ? '⚠' : '✓';
+          const grade = (m.match && !isSug) ? (m.match.student.grade || '—') : '—';
+          const mName = !m.match ? 'Not found'
+            : isSug ? `${m.match.student.name} <small style="color:#6677aa">(${Math.round(m.match.sim * 100)}% — not auto-filled)</small>`
+            : m.match.student.name;
           const existingNote = existing ? `<small style="color:#b05000"> (has: ${existing})</small>` : '';
           return `<tr class="${cls}"><td>${icon}</td><td>${m.novaName}${existingNote}</td><td>${mName}</td><td><b>${grade}</b></td></tr>`;
         }).join('');
@@ -1220,14 +1220,17 @@
             const tbody = panel.querySelector('tbody');
             tbody.innerHTML = newMatches.map(m => {
               const existing = m.input ? m.input.value.trim() : '';
-              const cls  = !m.match ? 'mns-no' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
-              const icon = !m.match ? '❌' : m.match.type === 'fuzzy' ? '⚠' : '✓';
-              const grade = m.match ? (m.match.student.grade || '—') : '—';
-              const mName = m.match ? m.match.student.name : 'Not found';
+              const isSug = m.match?.type === 'suggestion';
+              const cls  = !m.match ? 'mns-no' : isSug ? 'mns-sug' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
+              const icon = !m.match ? '❌' : isSug ? '❓' : m.match.type === 'fuzzy' ? '⚠' : '✓';
+              const grade = (m.match && !isSug) ? (m.match.student.grade || '—') : '—';
+              const mName = !m.match ? 'Not found'
+                : isSug ? `${m.match.student.name} <small style="color:#6677aa">(${Math.round(m.match.sim * 100)}% — not auto-filled)</small>`
+                : m.match.student.name;
               const existingNote = existing ? `<small style="color:#b05000"> (has: ${existing})</small>` : '';
               return `<tr class="${cls}"><td>${icon}</td><td>${m.novaName}${existingNote}</td><td>${mName}</td><td><b>${grade}</b></td></tr>`;
             }).join('');
-            const newMatched = newMatches.filter(m => m.match).length;
+            const newMatched = newMatches.filter(m => m.match && m.match.type !== 'suggestion').length;
             document.getElementById('mns-go').textContent = `✓ Fill ${newMatched} grade(s) into this row`;
           });
         }
@@ -1311,23 +1314,32 @@
       const mappings = parsed.assessmentRows.map((assessmentRow, rowIdx) => {
         const actKey = matchActivity(assessmentRow.assessment, activities);
         const studentMatch = actKey ? findStudentMatch(studentCol.name, activities[actKey]) : null;
-        const grade = studentMatch?.student.grade || '';
+        const isConfident = studentMatch && studentMatch.type !== 'suggestion';
+        const grade = isConfident ? studentMatch.student.grade || '' : '';
+        const suggestName = (!isConfident && studentMatch) ? studentMatch.student.name : '';
         const input = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
         const existing = input?.value.trim() || '';
-        return { assessmentRow, rowIdx, actKey, grade, input, existing };
+        return { assessmentRow, rowIdx, actKey, grade, suggestName, input, existing };
       }).filter(m => m.actKey); // skip rows with no matching activity
 
       const toFill = mappings.filter(m => m.grade && m.input).length;
       const noGrade = mappings.filter(m => m.actKey && !m.grade).length;
 
-      const tableRows = mappings.map(m => `
-        <tr style="background:${m.grade ? '#f0fff0' : '#fffbe6'}">
+      const tableRows = mappings.map(m => {
+        const gradeDisplay = m.grade
+          ? `<b>${m.grade}</b>`
+          : m.suggestName
+          ? `<span style="color:#6677aa;font-size:10px">❓ ${m.suggestName}?</span>`
+          : '—';
+        return `
+        <tr style="background:${m.grade ? '#f0fff0' : m.suggestName ? '#eef0ff' : '#fffbe6'}">
           <td style="padding:3px 8px">${m.assessmentRow.course ? m.assessmentRow.course + ' › ' : ''}${m.assessmentRow.assessment}</td>
           <td style="padding:3px 8px;color:#555">${m.actKey}</td>
           <td style="padding:3px 8px;text-align:center">
-            ${m.existing ? `<span style="color:#b05000;font-size:10px">${m.existing} → </span>` : ''}<b>${m.grade || '—'}</b>
+            ${m.existing ? `<span style="color:#b05000;font-size:10px">${m.existing} → </span>` : ''}${gradeDisplay}
           </td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
 
       panel.innerHTML = `
         <div class="mns-ph">
@@ -1355,8 +1367,6 @@
         hideUndoBtn();
 
         const stuTableEl = parsed.assessmentRows[0]?.row.closest('table');
-        const colIndices = [studentCol.colIndex];
-        const { promise: settlePromise, scoreRow } = createScoreSettleWatcher(stuTableEl);
 
         mnsProgress.show(`Filling grades for ${studentCol.name}…`);
         let filled = 0, skippedExisting = 0, processed = 0;
@@ -1367,11 +1377,12 @@
           if (processed % 4 === 0) await new Promise(r => setTimeout(r, 0));
         }
 
-        // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
+        // Phase 2: MutationObserver started AFTER filling so only Nova's own DOM
+        // reactions (score recalculation, cell updates) trigger the settle wait.
         document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
         const cancelAnim = animateBar(85, 99, 5000, pct => mnsProgressSetPct(pct));
 
-        await settlePromise;
+        await waitForNova(stuTableEl);
         cancelAnim();
         mnsProgressSetPct(100, '✓ Done');
         await new Promise(r => setTimeout(r, 300));
@@ -1500,8 +1511,6 @@
         hideUndoBtn();
 
         const faTableEl = rowsToFill[0]?.assessmentRow.row.closest('table');
-        const colIndices = parsed.studentCols.map(c => c.colIndex);
-        const { promise: settlePromise, scoreRow } = createScoreSettleWatcher(faTableEl);
 
         const totalCells = rowsToFill.reduce((s, r) => s + r.matches.length, 0);
         mnsProgress.show(`Filling ${rowsToFill.length} rows…`);
@@ -1523,11 +1532,12 @@
           totalUnmatched   += result.unmatched;
         }
 
-        // Phase 2: smooth RAF animation 85 → 99%; only hits 100% when observer quiesces
+        // Phase 2: MutationObserver started AFTER filling so only Nova's own DOM
+        // reactions (score recalculation, cell updates) trigger the settle wait.
         document.getElementById('mns-progress-label').textContent = 'Calculating scores…';
         const cancelAnim = animateBar(85, 99, 5000, pct => mnsProgressSetPct(pct));
 
-        await settlePromise;
+        await waitForNova(faTableEl);
         cancelAnim();
         mnsProgressSetPct(100, '✓ Done');
         await new Promise(r => setTimeout(r, 300));
