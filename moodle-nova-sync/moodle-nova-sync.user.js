@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.8.0
+// @version      4.9.0
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
@@ -62,9 +62,11 @@
 
   const IS_MOODLE = location.hostname === MOODLE_HOST;
   const IS_NOVA   = location.hostname === NOVA_HOST;
+  // Restrict Moodle side to the Grades section (/grade/...) only.
+  const IS_MOODLE_GRADES = IS_MOODLE && /\/grade\//.test(location.pathname);
 
   // Exit immediately on every other website — no UI or processing is done.
-  if (!IS_MOODLE && !IS_NOVA) return;
+  if (!IS_MOODLE_GRADES && !IS_NOVA) return;
 
   // ── Shared storage key ────────────────────────────────────────────────────────
   const STORAGE_KEY = 'mns_grades';
@@ -72,7 +74,7 @@
   // ═══════════════════════════════════════════════════════════════════════════════
   //  MOODLE SCRAPER
   // ═══════════════════════════════════════════════════════════════════════════════
-  if (IS_MOODLE) {
+  if (IS_MOODLE_GRADES) {
 
     const SEL = {
       studentRow:  'tr[data-uid], tr.user',
@@ -426,7 +428,8 @@
         font-size: 12px; display: none;
       }
       .mns-ph { background: #005f99; color: #fff; padding: 8px 12px;
-        font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        font-weight: bold; display: flex; justify-content: space-between; align-items: center;
+        cursor: move; user-select: none; }
       .mns-px { cursor: pointer; font-size: 16px; }
       .mns-tbl { width: 100%; border-collapse: collapse; }
       .mns-tbl th { background: #f0f0f0; padding: 4px 8px; text-align: left; font-weight: bold; }
@@ -499,7 +502,7 @@
         font-size: 18px; opacity: 0.60; line-height: 1;
       }
       #mns-summary-close:hover { opacity: 1; }
-      #mns-summary h3 { margin: 0 0 14px; font-size: 15px; color: #a8d8ff; }
+      #mns-summary h3 { margin: 0 0 14px; font-size: 15px; color: #a8d8ff; cursor: move; user-select: none; }
       .mns-sum-row {
         display: flex; justify-content: space-between; align-items: center;
         padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.09);
@@ -912,6 +915,23 @@
       });
     }
 
+    // ── Render preview table rows — shared by Preview panel and suggestion-accept handler ──
+    function renderPreviewRows(matchArr) {
+      return matchArr.map((m, i) => {
+        const existing = m.input ? m.input.value.trim() : '';
+        const isSug = m.match?.type === 'suggestion';
+        const cls  = !m.match ? 'mns-no' : isSug ? 'mns-sug' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
+        const icon = !m.match ? '❌' : isSug ? '❓' : m.match.type === 'fuzzy' ? '⚠' : '✓';
+        const grade = (m.match && !isSug) ? (m.match.student.grade || '—') : '—';
+        const mName = !m.match ? 'Not found'
+          : isSug
+          ? `<span class="mns-sug-pick" data-idx="${i}" title="Click to accept this match and fill the grade" style="cursor:pointer;text-decoration:underline dotted;color:#4455bb">${m.match.student.name}</span> <small style="color:#6677aa">(${Math.round(m.match.sim * 100)}% — click to accept)</small>`
+          : m.match.student.name;
+        const existingNote = existing ? `<small style="color:#b05000"> (has: ${existing})</small>` : '';
+        return `<tr class="${cls}"><td>${icon}</td><td>${m.novaName}${existingNote}</td><td>${mName}</td><td><b>${grade}</b></td></tr>`;
+      }).join('');
+    }
+
     // ── Undo stack — stores backups of overwritten input values ──────────────
     let undoStack = []; // [{ input, previousValue }]
 
@@ -1083,9 +1103,9 @@
       return picker ? picker.value : autoKey;
     }
 
-    async function runFill(assessmentRow, rowLabel, activities, autoKey, skipExisting) {
-      const actKey = getSelectedActivity(Object.keys(activities), autoKey);
-      const matches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[actKey]);
+    async function runFill(assessmentRow, rowLabel, activities, autoKey, skipExisting, prebuiltMatches = null) {
+      const actKey = prebuiltMatches ? autoKey : getSelectedActivity(Object.keys(activities), autoKey);
+      const matches = prebuiltMatches || buildMatches(assessmentRow, parsed_studentCols_cache, activities[actKey]);
       hideUndoBtn();
 
       const tableEl = assessmentRow.row.closest('table');
@@ -1159,27 +1179,14 @@
       const { assessmentRow, rowLabel, activities } = ctx;
 
       resolveAndOpen(assessmentRow, activities, (autoKey, pickerHtml) => {
-        const actKey = autoKey;
-        const matches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[actKey]);
-        const matched = matches.filter(m => m.match && m.match.type !== 'suggestion').length;
-        const alreadyFilled = matches.filter(m => m.input && m.input.value.trim() !== '').length;
-
-        const rows = matches.map(m => {
-          const existing = m.input ? m.input.value.trim() : '';
-          const isSug = m.match?.type === 'suggestion';
-          const cls  = !m.match ? 'mns-no' : isSug ? 'mns-sug' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
-          const icon = !m.match ? '❌' : isSug ? '❓' : m.match.type === 'fuzzy' ? '⚠' : '✓';
-          const grade = (m.match && !isSug) ? (m.match.student.grade || '—') : '—';
-          const mName = !m.match ? 'Not found'
-            : isSug ? `${m.match.student.name} <small style="color:#6677aa">(${Math.round(m.match.sim * 100)}% — not auto-filled)</small>`
-            : m.match.student.name;
-          const existingNote = existing ? `<small style="color:#b05000"> (has: ${existing})</small>` : '';
-          return `<tr class="${cls}"><td>${icon}</td><td>${m.novaName}${existingNote}</td><td>${mName}</td><td><b>${grade}</b></td></tr>`;
-        }).join('');
+        let currentActKey = autoKey;
+        let currentMatches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[currentActKey]);
+        const countMatched = () => currentMatches.filter(m => m.match && m.match.type !== 'suggestion').length;
+        const alreadyFilled = currentMatches.filter(m => m.input && m.input.value.trim() !== '').length;
 
         panel.innerHTML = `
           <div class="mns-ph">
-            <span>Preview: ${rowLabel} &nbsp;(${matched}/${matches.length} matched)</span>
+            <span>Preview: ${rowLabel} &nbsp;(<span id="mns-match-count">${countMatched()}/${currentMatches.length} matched</span>)</span>
             <span class="mns-px" id="mns-close-panel">✕</span>
           </div>
           ${pickerHtml}
@@ -1192,46 +1199,47 @@
           </div>
           <table class="mns-tbl">
             <thead><tr><th></th><th>Nova Student</th><th>Moodle Match</th><th>Grade</th></tr></thead>
-            <tbody>${rows}</tbody>
+            <tbody>${renderPreviewRows(currentMatches)}</tbody>
           </table>
-          <button id="mns-go" style="background:#2a7a2a">✓ Fill ${matched} grade(s) into this row</button>
+          <button id="mns-go" style="background:#2a7a2a">✓ Fill ${countMatched()} grade(s) into this row</button>
         `;
         panel.style.display = 'block';
         assessmentRow.row.classList.add('mns-hl');
 
-        // Explicitly set the picker value after DOM insertion — the `selected`
-        // attribute in an innerHTML string is not reliably honoured by all browsers.
+        // Explicitly set the picker value after DOM insertion.
         const pickerEl = document.getElementById('mns-act-picker');
         if (pickerEl) {
           pickerEl.value = autoKey;
           console.log(`[MNS] picker.value set to "${pickerEl.value}" (wanted "${autoKey}")`);
         }
 
+        function refreshPanel() {
+          panel.querySelector('tbody').innerHTML = renderPreviewRows(currentMatches);
+          document.getElementById('mns-match-count').textContent = `${countMatched()}/${currentMatches.length} matched`;
+          document.getElementById('mns-go').textContent = `✓ Fill ${countMatched()} grade(s) into this row`;
+        }
+
+        // Clicking an underlined suggestion name promotes it to a fuzzy match → will be filled.
+        panel.querySelector('tbody').addEventListener('click', e => {
+          const pick = e.target.closest('.mns-sug-pick');
+          if (!pick) return;
+          const idx = parseInt(pick.dataset.idx, 10);
+          if (isNaN(idx) || !currentMatches[idx]?.match) return;
+          currentMatches[idx].match.type = 'fuzzy';
+          refreshPanel();
+        });
+
         document.getElementById('mns-close-panel').onclick = () => {
           panel.style.display = 'none';
           assessmentRow.row.classList.remove('mns-hl');
         };
 
-        // Re-render table when activity picker changes
+        // Re-render table when activity picker changes (resets accepted suggestions for new activity).
         if (Object.keys(activities).length > 1) {
-          document.getElementById('mns-act-picker')?.addEventListener('change', (e) => {
-            const newKey = e.target.value;
-            const newMatches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[newKey]);
-            const tbody = panel.querySelector('tbody');
-            tbody.innerHTML = newMatches.map(m => {
-              const existing = m.input ? m.input.value.trim() : '';
-              const isSug = m.match?.type === 'suggestion';
-              const cls  = !m.match ? 'mns-no' : isSug ? 'mns-sug' : m.match.type === 'fuzzy' ? 'mns-fuz' : 'mns-ok';
-              const icon = !m.match ? '❌' : isSug ? '❓' : m.match.type === 'fuzzy' ? '⚠' : '✓';
-              const grade = (m.match && !isSug) ? (m.match.student.grade || '—') : '—';
-              const mName = !m.match ? 'Not found'
-                : isSug ? `${m.match.student.name} <small style="color:#6677aa">(${Math.round(m.match.sim * 100)}% — not auto-filled)</small>`
-                : m.match.student.name;
-              const existingNote = existing ? `<small style="color:#b05000"> (has: ${existing})</small>` : '';
-              return `<tr class="${cls}"><td>${icon}</td><td>${m.novaName}${existingNote}</td><td>${mName}</td><td><b>${grade}</b></td></tr>`;
-            }).join('');
-            const newMatched = newMatches.filter(m => m.match && m.match.type !== 'suggestion').length;
-            document.getElementById('mns-go').textContent = `✓ Fill ${newMatched} grade(s) into this row`;
+          document.getElementById('mns-act-picker')?.addEventListener('change', e => {
+            currentActKey = e.target.value;
+            currentMatches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[currentActKey]);
+            refreshPanel();
           });
         }
 
@@ -1239,7 +1247,7 @@
           const skipExisting = document.getElementById('mns-skip-existing').checked;
           panel.style.display = 'none';
           assessmentRow.row.classList.remove('mns-hl');
-          runFill(assessmentRow, rowLabel, activities, autoKey, skipExisting);
+          runFill(assessmentRow, rowLabel, activities, currentActKey, skipExisting, currentMatches);
         };
       });
     });
@@ -1252,7 +1260,7 @@
 
       resolveAndOpen(assessmentRow, activities, (autoKey, pickerHtml) => {
         const tempMatches = buildMatches(assessmentRow, parsed_studentCols_cache, activities[autoKey]);
-        const wouldFill   = tempMatches.filter(m => m.match && m.match.student.grade && m.input).length;
+        const wouldFill   = tempMatches.filter(m => m.match && m.match.type !== 'suggestion' && m.match.student.grade && m.input).length;
         const alreadyFilled = tempMatches.filter(m => m.input && m.input.value.trim() !== '').length;
 
         panel.innerHTML = `
@@ -1590,6 +1598,36 @@
         GM_notification({ title: 'Nova Clear All Done', text: `${cleared} cells cleared`, timeout: 4000 });
       };
     });
+
+    // ── Drag-to-reposition: attach to panel (.mns-ph header) and summary (h3) ──
+    function makeDraggable(el, handleSelector) {
+      el.addEventListener('mousedown', e => {
+        const handle = e.target.closest(handleSelector);
+        if (!handle || e.button !== 0) return;
+        e.preventDefault();
+        const rect = el.getBoundingClientRect();
+        const startX = e.clientX, startY = e.clientY;
+        const startLeft = rect.left, startTop = rect.top;
+        // Switch from right/transform anchoring to explicit left/top so dragging works correctly.
+        el.style.right = 'auto';
+        el.style.bottom = 'auto';
+        el.style.transform = 'none';
+        el.style.left = startLeft + 'px';
+        el.style.top  = startTop  + 'px';
+        function onMove(ev) {
+          el.style.left = (startLeft + ev.clientX - startX) + 'px';
+          el.style.top  = (startTop  + ev.clientY - startY) + 'px';
+        }
+        function onUp() {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }
+    makeDraggable(panel, '.mns-ph');
+    makeDraggable(summaryEl, 'h3');
 
     // ── Init ──────────────────────────────────────────────────────────────────
     async function init() {
