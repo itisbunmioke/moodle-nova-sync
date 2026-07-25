@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.4.0
+// @version      2.5.6
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -831,7 +831,12 @@
         .replace(/\s*\(\d+\s+of\s+\d+[^)]*\)/g, '')
         .trim() || null;
     }
-    return { fileLinks, onlineText, realName };
+    // Server-side graded state: Moodle marks selected rubric levels with .checked in the
+    // server-rendered HTML. This is authoritative — no live-DOM race conditions.
+    const isGraded = !!doc.querySelector(
+      '.level.checked, .level[aria-checked="true"], td.level[data-checked="1"]'
+    );
+    return { fileLinks, onlineText, realName, isGraded };
   }
 
   // ── AI prompts ───────────────────────────────────────────────────────────
@@ -870,11 +875,13 @@
     const foundSummary = submittedFiles.length
       ? submittedFiles.join(', ')
       : (foundTypes.length ? foundTypes.join(', ') : 'No files successfully extracted');
-    return `You are an instructor conducting a rigorous, line-by-line evaluation of a student submission.
+    return `You are an instructor conducting a thorough, fair evaluation of a student submission. Your job is to read every part of the submission carefully and reward genuine understanding — thoroughness means reading everything, not finding reasons to deduct. When in doubt, the default is to award credit.
 
 ACCURACY IS YOUR TOP PRIORITY. You may only award credit for a requirement you can directly verify in the submitted content below. Do not assume, infer, or invent evidence for something you cannot find. If a function, section, slide, or dataset is not visible in the submission text, treat it as absent.
 
-WITHIN WHAT YOU CAN VERIFY: be fair and student-friendly. A partial or imperfect attempt that genuinely addresses the requirement still counts toward it. When evidence is present but sits ambiguously between two adjacent rubric levels, choose the higher one. Never penalise for style or presentation polish unless the rubric explicitly requires it.
+WITHIN WHAT YOU CAN VERIFY: be generous and student-friendly. A partial or imperfect attempt that genuinely addresses the requirement still counts toward it — even if the implementation is simple, the explanation brief, or the approach less polished than ideal. When evidence is present but sits ambiguously between two adjacent rubric levels, always choose the higher one. A student who demonstrates understanding of a concept, even imperfectly or concisely, has earned that credit. Minor gaps that do not undermine the core work should not drop a student to a lower rubric level. Never penalise for style, conciseness, or presentation polish unless the rubric explicitly requires it.
+
+LANGUAGE AND GRAMMAR: Be lenient on grammatical errors, spelling mistakes, awkward phrasing, and non-native English usage — always, even when the rubric includes a writing quality or communication criterion. Many students are non-native English speakers. Technical correctness and conceptual understanding must greatly outweigh language fluency in every scoring decision. Even when a rubric criterion explicitly addresses communication or writing, award the higher level if the technical content is sound; only drop to a lower level for language issues if the writing is so unclear that the technical meaning cannot be determined at all. If the meaning is recoverable, treat it as acceptable.
 
 ASSIGNMENT: ${title}
 
@@ -896,7 +903,7 @@ Respond ONLY with valid JSON in this exact shape (no markdown, no explanation ou
   ],
   "totalPoints": <number>,
   "overallComment": "<2-3 sentence overall assessment>",
-  "feedback": "<one short paragraph — the instructor comment, following all FEEDBACK RULES below>"
+  "feedback": "<one short paragraph following all FEEDBACK RULES below, OR an empty string \"\" if there is nothing specific and verifiable to add>"
 }
 
 — SCORING RULES —
@@ -905,7 +912,9 @@ Respond ONLY with valid JSON in this exact shape (no markdown, no explanation ou
 - Before scoring each criterion, re-read the INSTRUCTIONS above (including any "Deliverables", "Required Files", or "Submission Requirements" section). Score based on whether those specific requirements are met, not on generic quality.
 - EVIDENCE REQUIREMENT: Every justification must name the specific thing that earned or lost the points — a function name, line logic, PDF section heading, slide number, column name, formula. Generic justifications like "the student addressed this" or "the code handles this" are not acceptable. If you cannot name specific evidence, you cannot award credit.
 - ABSENCE CLAIMS REQUIRE EXHAUSTIVE VERIFICATION: Before writing that any topic, section, slide, function, analysis, or requirement is "missing", "absent", "not included", "not present", or "not addressed", you must have read every visible portion of that file. The submission may contain "[…content omitted…]" markers where text was cut to fit the context window — you have NOT read what is in those gaps. You cannot claim absence for any topic that could plausibly appear in an omitted section. Making a false absence claim (saying something is missing when it is present) is a grading error as serious as falsely awarding credit. When uncertain whether something is present in an omitted portion, do not penalise.
-- When uncertain between two adjacent levels, choose the higher one.
+- TERMINOLOGY AND CONTEXT: Students may address a requirement using different words, headings, or structure than the rubric expects. Before concluding a requirement is absent, check whether the concept appears under alternative terminology, a different section heading, or phrasing the rubric did not anticipate. A requirement is absent only when you have confirmed — across the entire visible submission — that neither the concept nor any equivalent expression of it appears anywhere.
+- When uncertain between two adjacent levels, always choose the higher one. The default direction is credit, not deduction.
+- BENEFIT OF THE DOUBT: A student who has made a genuine attempt at a requirement and partially succeeds should receive the level above the lowest. Reserve the bottom rubric level only for submissions that make no meaningful attempt whatsoever. Do not cascade a single gap into multiple criteria — if one issue affects several criteria, assign the deduction to the criterion it most clearly belongs to and be conservative about repeating it elsewhere.
 ${hasCode ? `- CRITICAL CODE REVIEW: Do a complete pass through every line of submitted code before scoring.
   (a) For each requirement in the INSTRUCTIONS, identify the exact function, class, or logic block that implements it — or state it is absent.
   (b) If a function exists, read its body: verify the logic actually does what the requirement demands. A function name alone is not evidence it works correctly.
@@ -916,12 +925,12 @@ ${hasDoc ? `- DOCUMENT REVIEW: Read every visible section of the submitted docum
   (a) For each rubric criterion, scan ALL visible sections — headings, body paragraphs, figures, tables — before concluding it is addressed or absent. A requirement covered on a later page is not absent just because you checked the introduction.
   (b) Quote or closely paraphrase the specific sentence, heading, or section that addresses each criterion. If it is genuinely absent from ALL visible sections, state that.
   (c) If omission markers are present, do not claim a section is absent — it may be in the omitted portion. Only penalise absences you can confirm across all visible text.
-  (d) Assess depth: a single vague sentence is not "thorough analysis". Only award higher levels when the content actually supports it.` : ''}
+  (d) Assess whether the content addresses the criterion. Brief, basic, or concise responses still count — do not penalise for limited length alone. Only drop to a lower level if the content is clearly insufficient: missing the point entirely, or so thin that you cannot confirm the criterion was addressed at all.` : ''}
 ${hasPresentation ? `- PRESENTATION REVIEW: Read ALL visible slides before scoring any criterion.
   (a) Scan every slide in the submission before concluding a topic was or was not addressed. A requirement on slide 12 is not absent just because slide 3 did not mention it.
   (b) For each rubric criterion, identify the specific slide number and content (chart, claim, heading, data point) that addresses it. If it genuinely does not appear on any visible slide, state that.
   (c) If omission markers are present between slides, do not claim those slide topics were not covered — they may be in the omitted portion. Only penalise absences you can confirm across all visible slides.
-  (d) Assess quality of content on each slide, not just whether slides exist. A slide with a title and no substance does not meet a criterion.` : ''}
+  (d) Assess whether the slide content meaningfully addresses the criterion. A slide with relevant information — even if brief or basic — meets the criterion. Only disqualify a slide if it is genuinely empty (title with no supporting content whatsoever).` : ''}
 ${!hasCode && (instructions.toLowerCase().includes('python') || instructions.toLowerCase().includes('code') || instructions.toLowerCase().includes('.py')) ? '- WARNING: The assignment instructions require code/Python but no code file was found in this submission. Penalise any criteria related to coding or implementation accordingly.' : ''}
 ${!hasDataset && (instructions.toLowerCase().includes('dataset') || instructions.toLowerCase().includes('csv') || instructions.toLowerCase().includes('data')) ? '- WARNING: The assignment instructions require a dataset but none was found in this submission. Penalise any criteria related to data handling accordingly.' : ''}
 ${!hasPresentation && (instructions.toLowerCase().includes('.pptx') || instructions.toLowerCase().includes('presentation') || instructions.toLowerCase().includes('slides') || instructions.toLowerCase().includes('powerpoint')) ? '- WARNING: The assignment instructions require a presentation/slides but none was found. Penalise any criteria related to the presentation accordingly.' : ''}
@@ -958,6 +967,8 @@ SOUND HUMAN:
 - Mild imprecision is human: "roughly", "kind of", "more or less", "not quite", "a bit".
 - Avoid perfectly parallel lists ("X is Y, Z is W, A is B") — that pattern screams AI.
 
+NO LANGUAGE FEEDBACK: Never mention grammar, spelling, punctuation, sentence structure, phrasing, word choice, or language fluency in the "feedback" field — not even as a minor note, a gentle suggestion, or a positive remark. Do not write anything like "watch your grammar", "a few spelling errors", "could be clearer", "the writing is a bit rough", or "good writing". The feedback must focus exclusively on technical content, rubric criteria, and conceptual correctness. If you have nothing technical to say, say less — do not fill the gap with language commentary.
+
 BANNED CHARACTERS AND PHRASES (never write any of these in "feedback"):
 Em-dash character: BANNED. Do not use it anywhere in "feedback". Replace with a semicolon, colon, or start a new sentence.
 "demonstrates", "showcases", "commendable", "proficiency", "exhibits", "furthermore", "additionally",
@@ -984,10 +995,14 @@ a different student's work without changing a word, rewrite it.
 DEDUCTION COVERAGE (mandatory — highest priority rule in this section):
 For every criterion where you awarded fewer than the maximum points, the feedback MUST include a specific explanation of what was missing, incomplete, or incorrect for that criterion. This is non-negotiable. Do not let any deduction go unmentioned. If multiple criteria were below max, address each one. Reference the actual gap in the work (a missing function, a wrong column, an absent slide, an incomplete analysis), not just "could be improved".
 
+BLANK FEEDBACK: If the student received maximum points on every single criterion AND you have no specific, verifiable technical observation to add, set "feedback" to an empty string "". A blank comment is far better than generic praise, filler, or restating what the rubric scores already communicate. Feedback is not mandatory — write it only when you have something submission-specific and useful to say. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
+
+VERIFY BEFORE WRITING: Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, dataset column, or section title — locate it in the submission text above. If you cannot find it there, do not name it; use general terms instead. Before saying something is "missing" or "absent" in feedback, scan the full visible submission from start to end. If the topic could plausibly be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
+
 STRUCTURE:
 - No formula. Don't do: praise -> detail -> improvement -> encouragement. Lead with whatever matters most.
-- Name something specific. Don't invent or assume — only reference details actually in the submission.
-- If something is missing or wrong, say so precisely. Don't bury the critique.
+- Name something specific. Before naming any element, confirm it appears in the submission above — if it doesn't, don't name it. Never invent specifics that aren't in the text.
+- If something is missing or wrong, say so precisely — but only after confirming absence across the full visible submission. Don't bury the critique.
 - For code: ground every claim in what the code actually does. Read the logic; don't summarise generically.
 - For presentations: name a specific slide, chart, claim, or narrative point. Not "your slides covered X" without anchoring it to actual content.
 
@@ -1072,10 +1087,16 @@ a different student's work without changing a word, rewrite it.
 — DEDUCTION COVERAGE (mandatory) —
 For every criterion in SCORES where the student received fewer than the maximum points, the feedback MUST include a specific explanation of what was missing, incomplete, or incorrect. Do not let any deduction pass without addressing it. Reference the actual gap (a missing function, wrong column, absent slide, incomplete analysis), not just "could be improved".
 
+— BLANK FEEDBACK —
+If the student received maximum points on every criterion AND you have no specific, verifiable technical observation to add, return an empty string "". Feedback is not mandatory. A blank is better than generic praise or restating the rubric scores. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
+
+— VERIFY BEFORE WRITING —
+Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
+
 — STRUCTURE —
 - No formula. Don't do: praise → detail → improvement → encouragement. Lead with whatever matters most.
-- Name something specific. Don't invent or assume — only reference details actually in the submission.
-- If something is missing or wrong, say so precisely. Don't bury the critique.
+- Name something specific. Before naming any element, confirm it is in the submission above — if not, don't name it. Never invent specifics.
+- If something is missing or wrong, say so precisely — but only after confirming absence across the full visible submission. Don't bury the critique.
 - For code: ground every claim in what the code actually does. Read the logic; don't summarise generically.
 - For presentations: name a specific slide, chart, claim, or narrative point. Not "your slides covered X" without anchoring it to actual content.
 
@@ -1631,37 +1652,32 @@ For every criterion in SCORES where the student received fewer than the maximum 
     return plagJaccard(plagShingles(normA), plagShingles(normB));
   }
 
-  function computePlagiarismPairs(/** @type {any[]} */ students, /** @type {Record<string,any>} */ results) {
-    const graded = students.filter((/** @type {any} */ s) => {
-      const r = results[s.uid];
-      return r && !r.error && !r.moodleGraded && r._extractedText;
-    });
+  function computePlagiarismPairs(/** @type {Record<string,{name:string,extractedText:string}>} */ cache) {
+    const entries = Object.entries(cache).filter(([, v]) => v.extractedText);
     const pairs = /** @type {{sA:any,sB:any,score:number}[]} */ ([]);
-    for (let i = 0; i < graded.length; i++) {
-      for (let j = i + 1; j < graded.length; j++) {
-        const sA = graded[i], sB = graded[j];
-        const score = plagSimilarity(
-          results[sA.uid]._extractedText,
-          results[sB.uid]._extractedText
-        );
-        pairs.push({ sA, sB, score });
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const [uidA, dataA] = entries[i];
+        const [uidB, dataB] = entries[j];
+        const score = plagSimilarity(dataA.extractedText, dataB.extractedText);
+        pairs.push({ sA: { uid: uidA, name: dataA.name }, sB: { uid: uidB, name: dataB.name }, score });
       }
     }
     return pairs.sort((a, b) => b.score - a.score);
   }
 
-  function openPlagiarismPanel(/** @type {any[]} */ students, /** @type {Record<string,any>} */ results) {
+  function openPlagiarismPanel(/** @type {Record<string,{name:string,extractedText:string}>} */ cache) {
     const existing = document.getElementById('mag-plag-overlay');
     if (existing) existing.remove();
 
     setStatus('Running plagiarism check…', '#c9a0ff');
-    const pairs = computePlagiarismPairs(students, results);
+    const pairs = computePlagiarismPairs(cache);
     setStatus('Plagiarism check complete.', '#80d0a0');
 
     const overlay = document.createElement('div');
     overlay.id = 'mag-plag-overlay';
 
-    const checkedCount = students.filter((/** @type {any} */ s) => results[s.uid]?._extractedText).length;
+    const checkedCount = Object.keys(cache).length;
     const SHOW_MIN = 0.40;
     const visible  = pairs.filter(p => p.score >= SHOW_MIN);
 
@@ -1709,11 +1725,42 @@ For every criterion in SCORES where the student received fewer than the maximum 
         </div>
       </div>`;
 
-    document.body.appendChild(overlay);
+    (document.getElementById('mag-review-overlay') || document.body).appendChild(overlay);
 
     const closeBtn = document.getElementById('mag-plag-close');
     if (closeBtn) closeBtn.onclick = () => overlay.remove();
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+    // Draggable by header — same pattern as the review panel
+    overlay.addEventListener('mousedown', e => {
+      const header = /** @type {HTMLElement|null} */(/** @type {Element} */(e.target).closest('.mag-plag-header'));
+      if (!header) return;
+      const box = /** @type {HTMLElement|null} */(overlay.querySelector('.mag-plag-box'));
+      if (!box) return;
+      // On first drag switch from flex-centering to explicit absolute coords
+      if (box.style.position !== 'absolute') {
+        const r = box.getBoundingClientRect();
+        overlay.style.alignItems     = 'flex-start';
+        overlay.style.justifyContent = 'flex-start';
+        box.style.position = 'absolute';
+        box.style.left     = r.left + 'px';
+        box.style.top      = r.top  + 'px';
+      }
+      const sx = e.clientX - box.offsetLeft;
+      const sy = e.clientY - box.offsetTop;
+      header.style.cursor = 'grabbing';
+      const onMove = (/** @type {MouseEvent} */ ev) => {
+        box.style.left = Math.max(0, Math.min(window.innerWidth  - box.offsetWidth,  ev.clientX - sx)) + 'px';
+        box.style.top  = Math.max(0, Math.min(window.innerHeight - box.offsetHeight, ev.clientY - sy)) + 'px';
+      };
+      const onUp = () => {
+        header.style.cursor = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup',   onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',   onUp);
+    });
 
     for (const btn of /** @type {NodeListOf<HTMLButtonElement>} */(overlay.querySelectorAll('.mag-plag-ai-btn'))) {
       btn.addEventListener('click', async () => {
@@ -1731,12 +1778,12 @@ For every criterion in SCORES where the student received fewer than the maximum 
 Similarity score: ${Math.round(pair.score * 100)}%
 
 STUDENT A (${pair.sA.name}):
-${clip(results[pair.sA.uid]._extractedText, 2500)}
+${clip(cache[pair.sA.uid].extractedText, 2500)}
 
 ---
 
 STUDENT B (${pair.sB.name}):
-${clip(results[pair.sB.uid]._extractedText, 2500)}
+${clip(cache[pair.sB.uid].extractedText, 2500)}
 
 Respond ONLY with valid JSON (no markdown):
 {"verdict":"likely_plagiarism"|"coincidental"|"uncertain","confidence":"high"|"medium"|"low","reason":"one sentence naming the specific element that matches or differs"}
@@ -1770,12 +1817,15 @@ Check: same variable names, identical code logic, same written arguments, same p
       color: #fff; font-family: sans-serif; font-size: 13px;
       display: flex; align-items: center; gap: 10px;
       padding: 7px 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      cursor: grab;
     }
+    #mag-bar button, #mag-bar select, #mag-bar input { cursor: pointer; }
     #mag-bar .mag-title { font-weight: bold; letter-spacing: 0.04em; margin-right: 6px; }
     #mag-bar .mag-sep   { opacity: 0.4; }
     #mag-bar.collapsed {
       left: auto; right: 10px; top: 10px; width: auto; border-radius: 8px;
       padding: 5px 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.5); cursor: move;
+      transition: border-radius 0.2s ease, padding 0.2s ease, box-shadow 0.2s ease;
     }
     #mag-bar.collapsed #mag-collapse-btn { cursor: pointer; }
     #mag-bar.collapsed .mag-title,
@@ -1785,6 +1835,24 @@ Check: same variable names, identical code logic, same written arguments, same p
     #mag-bar.collapsed #mag-settings-btn,
     #mag-bar.collapsed #mag-status { display: none; }
     #mag-bar.collapsed #mag-collapse-btn::after { content: 'MAG'; }
+    #mag-bar.collapsed.snapped-right {
+      right: 0; left: auto;
+      border-radius: 10px 0 0 10px;
+      padding: 14px 7px;
+      box-shadow: -3px 0 16px rgba(0,0,0,0.55);
+    }
+    #mag-bar.collapsed.snapped-right #mag-collapse-btn {
+      writing-mode: vertical-lr;
+      margin: 0; padding: 6px 4px;
+    }
+    /* Expanded bar snapped to right edge — stays horizontal, no writing-mode */
+    #mag-bar.snapped-right:not(.collapsed) {
+      left: auto; right: 0;
+      border-radius: 10px 0 0 10px;
+      box-shadow: -3px 0 16px rgba(0,0,0,0.55);
+      transform: none;
+      width: auto;
+    }
     #mag-collapse-btn { margin-left: auto; font-size: 11px; padding: 3px 8px; opacity: 0.75; }
     #mag-collapse-btn:hover { opacity: 1; }
     .mag-btn {
@@ -1943,8 +2011,8 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     /* ── Plagiarism panel ─────────────────────────────────────────────────── */
     .mag-plag-overlay {
-      display: flex; position: fixed; inset: 0; z-index: 1000001;
-      background: rgba(0,0,0,0.65); align-items: center; justify-content: center;
+      display: flex; position: absolute; inset: 0; z-index: 10;
+      background: rgba(0,0,0,0.60); align-items: center; justify-content: center;
     }
     .mag-plag-box {
       background: #0e0020; border: 1px solid #7b2fff; border-radius: 14px;
@@ -1957,6 +2025,7 @@ Check: same variable names, identical code logic, same written arguments, same p
       background: linear-gradient(135deg, #2d0057, #5a0096);
       padding: 16px 22px; border-radius: 14px 14px 0 0;
       display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+      cursor: grab; user-select: none;
     }
     .mag-plag-header h3 { margin: 0; font-size: 15px; flex: 1; }
     .mag-plag-body { padding: 20px 22px; overflow-y: auto; flex: 1; }
@@ -2118,7 +2187,21 @@ Check: same variable names, identical code logic, same written arguments, same p
   const applyBarPos = () => {
     try {
       const pos = JSON.parse(get('barPos') || 'null');
-      if (pos) { bar.style.right = 'auto'; bar.style.left = pos.left + 'px'; bar.style.top = pos.top + 'px'; }
+      if (!pos) return;
+      if (pos.snappedRight) {
+        bar.classList.add('snapped-right');
+        bar.style.right = '0'; bar.style.left = 'auto';
+        if (pos.top != null) bar.style.top = pos.top + 'px';
+      } else if (pos.left != null) {
+        bar.style.right     = 'auto';
+        bar.style.left      = pos.left + 'px';
+        bar.style.top       = pos.top  + 'px';
+        // If restoring an expanded bar's floating position, detach from the CSS anchor
+        if (!bar.classList.contains('collapsed')) {
+          bar.style.transform    = 'none';
+          bar.style.borderRadius = '10px';
+        }
+      }
     } catch {}
   };
 
@@ -2128,7 +2211,26 @@ Check: same variable names, identical code logic, same written arguments, same p
       collapsed ? '' : '‹';
     set('barCollapsed', collapsed ? '1' : '');
     if (!collapsed) {
-      bar.style.left = ''; bar.style.top = ''; bar.style.right = '';
+      // Expanding: kill any active transition first so there's no border-radius flicker
+      bar.style.transition = 'none';
+      bar.classList.remove('snapped-right');
+      bar.style.width = ''; bar.style.borderRadius = ''; bar.style.transform = '';
+      // Restore floating position if bar was dragged, else let CSS default kick in
+      try {
+        const pos = JSON.parse(get('barPos') || 'null');
+        if (pos && !pos.snappedRight && pos.left != null) {
+          bar.style.left = pos.left + 'px';
+          bar.style.top  = pos.top  + 'px';
+          bar.style.right = 'auto';
+          bar.style.borderRadius = '10px';
+        } else {
+          bar.style.left = ''; bar.style.top = ''; bar.style.right = '';
+        }
+      } catch {
+        bar.style.left = ''; bar.style.top = ''; bar.style.right = '';
+      }
+      // Re-enable transitions after one paint
+      requestAnimationFrame(() => { bar.style.transition = ''; });
     } else {
       applyBarPos();
     }
@@ -2138,33 +2240,117 @@ Check: same variable names, identical code logic, same written arguments, same p
   if (get('barCollapsed') === '1') {
     bar.classList.add('collapsed');
     /** @type {HTMLButtonElement} */ (document.getElementById('mag-collapse-btn')).textContent = '';
-    applyBarPos();
   }
+  applyBarPos(); // restores position for both collapsed and expanded states
 
-  // Draggable collapsed bar — drag anywhere, position persists across refreshes
+  // Draggable bar — works in both collapsed and expanded states.
+  // Right-edge snap (within 80px): bar slides to right edge and locks there.
+  // Collapsed+snapped → vertical pill.  Expanded+snapped → horizontal strip at right.
+  // Dragging the expanded bar near right edge collapses it first, then snaps.
   bar.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
-    if (!bar.classList.contains('collapsed')) return;
     if (e.button !== 0) return;
-    const rect  = bar.getBoundingClientRect();
-    const grabX = e.clientX - rect.left;
-    const grabY = e.clientY - rect.top;
+    const isCollapsed = bar.classList.contains('collapsed');
+    // In expanded mode skip drag when clicking buttons, selects, inputs
+    if (!isCollapsed && /** @type {HTMLElement} */(e.target).closest('button, select, input, a')) return;
+
+    const SNAP_DIST = 80;
     let dragging = false;
+    const wasSnapped   = isCollapsed && bar.classList.contains('snapped-right');
+    const wasExpanded  = !isCollapsed;
+
+    // Capture initial visual rect BEFORE any class changes
+    const rect  = bar.getBoundingClientRect();
+    let grabX = e.clientX - rect.left;
+    let grabY = e.clientY - rect.top;
+
     const onMove = (/** @type {MouseEvent} */ ev) => {
       if (!dragging) {
         if (Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 4) return;
         dragging = true;
-        bar.style.right  = 'auto';
-        bar.style.cursor = 'grabbing';
+        bar.style.transition = 'none';
+        bar.style.cursor     = 'grabbing';
+
+        if (wasSnapped) {
+          // Unsnap on first movement (not on mousedown) so a plain click expands normally
+          bar.classList.remove('snapped-right');
+          bar.style.right = 'auto';
+          bar.style.left  = Math.max(0, ev.clientX - bar.offsetWidth  / 2) + 'px';
+          bar.style.top   = Math.max(0, ev.clientY - bar.offsetHeight / 2) + 'px';
+          grabX = ev.clientX - bar.offsetLeft;
+          grabY = ev.clientY - bar.offsetTop;
+        } else if (wasExpanded) {
+          // Detach expanded bar from its percentage/transform anchor
+          bar.style.transform    = 'none';
+          bar.style.left         = rect.left + 'px';
+          bar.style.top          = rect.top  + 'px';
+          bar.style.right        = 'auto';
+          bar.style.width        = rect.width + 'px'; // freeze percentage width
+          bar.style.borderRadius = '10px';
+        } else {
+          bar.style.right = 'auto';
+        }
       }
-      bar.style.left = Math.max(0, Math.min(window.innerWidth  - bar.offsetWidth,  ev.clientX - grabX)) + 'px';
-      bar.style.top  = Math.max(0, Math.min(window.innerHeight - bar.offsetHeight, ev.clientY - grabY)) + 'px';
+
+      const rawLeft = Math.max(0, Math.min(window.innerWidth  - bar.offsetWidth,  ev.clientX - grabX));
+      const rawTop  = Math.max(0, Math.min(window.innerHeight - bar.offsetHeight, ev.clientY - grabY));
+      // Magnetic pull: lock to right edge when within snap zone
+      const snapLeft = window.innerWidth - bar.offsetWidth;
+      bar.style.left = ((window.innerWidth - (rawLeft + bar.offsetWidth)) < SNAP_DIST ? snapLeft : rawLeft) + 'px';
+      bar.style.top  = rawTop + 'px';
     };
+
     const onUp = () => {
       bar.style.cursor = '';
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup',   onUp);
-      if (dragging) set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
+      if (!dragging) return;
+
+      const distFromRight = window.innerWidth - bar.getBoundingClientRect().right;
+
+      if (distFromRight < SNAP_DIST) {
+        // Snap to right edge — collapse expanded bar first if needed
+        if (wasExpanded) {
+          bar.style.width        = '';
+          bar.style.borderRadius = '';
+          bar.classList.add('collapsed');
+          /** @type {HTMLButtonElement} */ (document.getElementById('mag-collapse-btn')).textContent = '';
+          set('barCollapsed', '1');
+        }
+
+        const targetLeft   = window.innerWidth - bar.offsetWidth;
+        const alreadyFlush = Math.abs(bar.offsetLeft - targetLeft) < 2;
+
+        const applySnap = () => {
+          bar.style.transition = '';
+          bar.classList.add('snapped-right');
+          bar.style.left = 'auto'; bar.style.right = '0';
+          set('barPos', JSON.stringify({ snappedRight: true, top: bar.offsetTop }));
+        };
+
+        if (alreadyFlush) {
+          applySnap();
+        } else {
+          bar.style.transition = 'left 0.2s ease';
+          bar.style.left       = targetLeft + 'px';
+          const onEnd = (/** @type {TransitionEvent} */ ev) => {
+            if (ev.propertyName !== 'left') return;
+            bar.removeEventListener('transitionend', onEnd);
+            applySnap();
+          };
+          bar.addEventListener('transitionend', onEnd);
+        }
+      } else {
+        bar.style.transition = '';
+        if (wasExpanded) {
+          // Keep expanded bar at dragged position; unfreeze width back to CSS percentage
+          bar.style.width = '';
+          set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
+        } else {
+          set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
+        }
+      }
     };
+
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup',   onUp);
   });
@@ -2769,13 +2955,14 @@ Check: same variable names, identical code logic, same written arguments, same p
         }
         const result = await gradeSubmission(title, instructions, rubric, submissionText, inlineData, submittedFiles);
         results[student.uid] = result;
-        /** @type {any} */(result)._extractedText = submissionText; // retain for plagiarism comparison
+        /** @type {any} */(result)._extractedText = submissionText; // retain for per-session use
+        plagiarismCache[student.uid] = { name: student.name, extractedText: submissionText };
+        _savePlagCache();
         panel.updateCard(student, result);
-        // Enable plagiarism button once ≥ 2 submissions with extracted text are ready
+        // Enable plagiarism button once ≥ 2 submissions cached (persists across panel sessions)
         {
-          const gradedWithText = Object.values(results).filter(r => /** @type {any} */(r)?._extractedText).length;
           const pb2 = /** @type {HTMLButtonElement|null} */(document.getElementById('mag-plag-btn'));
-          if (pb2) pb2.disabled = gradedWithText < 2;
+          if (pb2) pb2.disabled = Object.keys(plagiarismCache).length < 2;
         }
         if (gradeAllActive) {
           setStatus(`${student.name} graded — auto-posting…`, '#c9a0ff');
@@ -2869,7 +3056,11 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     // Wire plagiarism check button (rendered in review panel footer)
     const plagBtnEl = /** @type {HTMLButtonElement|null} */(document.getElementById('mag-plag-btn'));
-    if (plagBtnEl) plagBtnEl.onclick = () => openPlagiarismPanel(students, results);
+    if (plagBtnEl) {
+      plagBtnEl.onclick = () => openPlagiarismPanel(plagiarismCache);
+      // Restore enabled state from cache accumulated across prior panel sessions
+      plagBtnEl.disabled = Object.keys(plagiarismCache).length < 2;
+    }
 
     // ── Real-time Moodle navigation watcher ───────────────────────────────────
     // Polls the AMD dropdown every 250 ms. Any change in value (from MAG buttons,
@@ -2944,44 +3135,36 @@ Check: same variable names, identical code logic, same written arguments, same p
         return;
       }
 
-      // Check if Moodle's AMD rubric module has marked a saved grade on the live DOM.
-      // The reliable signal is CSS class markers — Moodle adds .checked / aria-checked to
-      // the selected level cell after the grader page loads. Input value checks are NOT used
-      // because Moodle pre-populates levelid inputs with default values even for ungraded students.
-      // AMD can be slow; retry up to 3 times (500 ms each) before concluding "not graded".
-      const cssSelector =
-        '.level.checked, .level[aria-checked="true"], td.level[data-checked="1"], ' +
-        '.advancedgrading .checked, [id*="rubric"] .checked';
+      // Determine graded state by fetching the student's grade page from the server.
+      // Live-DOM approaches (MutationObserver, polling) are unreliable here: AMD swaps
+      // the entire panel element when navigating between students, so any observer watching
+      // the old element becomes detached, and any synchronous DOM check reads the previous
+      // student's stale .checked state. The server-rendered grade page always reflects the
+      // true grade state with no race conditions.
+      // This XHR also resolves the student's real name, replacing the separate name-resolution
+      // call that was previously done after detection.
       let gradedInMoodle = false;
-      for (let attempt = 0; attempt < 3 && !gradedInMoodle; attempt++) {
-        await sleep(500);
-        // If Moodle navigated to a different student while we were sleeping,
-        // the live DOM no longer belongs to newUid — reading it would give a
-        // false result for the wrong student. Abort; detectNav will fire a fresh
-        // onMoodleNavigated for whoever Moodle is now showing.
+      try {
+        const fetched = await fetchStudentFiles(student);
+        // Abort if Moodle navigated to a different student while the XHR was in-flight.
         const midUid = getMoodleUid();
         if (midUid && midUid !== newUid) { lastWatchedUid = ''; return; }
-        gradedInMoodle = !!document.querySelector(cssSelector);
+        gradedInMoodle = fetched.isGraded;
+        // Update name now so the card built below is correct immediately.
+        if (fetched.realName && student.name !== fetched.realName) {
+          student.name = fetched.realName;
+          const nameEl = document.querySelector(`#mag-card-${newUid} .mag-card-name`);
+          if (nameEl) nameEl.textContent = fetched.realName;
+        }
+      } catch (_e) {
+        // XHR failed — treat as ungraded so grading can still proceed.
+        gradedInMoodle = false;
       }
 
       if (gradedInMoodle) {
         if (!results[newUid]) results[newUid] = { moodleGraded: true };
         setStatus(`${student.name} — rubric already set in Moodle.${gradeAllActive ? ' Skipping…' : ''}`, '#9070c0');
-        // Show the regrade button immediately with whatever name we have.
         panel.updateCard(student, { moodleGraded: true });
-        // Resolve the real first name in the background — same source used during normal grading.
-        // fetchStudentFiles reads the Willis email from the grade page, which is the authoritative
-        // first-name source. The card name span updates in place when the XHR completes.
-        fetchStudentFiles(student).then(fetched => {
-          if (fetched.realName && student.name !== fetched.realName) {
-            student.name = fetched.realName;
-            if (getMoodleUid() === newUid) {
-              const nameEl = document.querySelector(`#mag-card-${newUid} .mag-card-name`);
-              if (nameEl) nameEl.textContent = fetched.realName;
-              setStatus(`${fetched.realName} — rubric already set in Moodle.`, '#9070c0');
-            }
-          }
-        }).catch(() => {});
         if (gradeAllActive) await autoAdvance();
       } else {
         // Not graded anywhere yet — auto-grade now
@@ -3039,6 +3222,18 @@ Check: same variable names, identical code logic, same written arguments, same p
   let activeGradeCurrentFn = /** @type {(()=>Promise<void>)|null} */ (null);
   let gradeAllActive = false; // set true by "Grade All" — triggers auto-post and auto-advance
   const exhaustedGithubPats = new Map(); // PAT -> reset timestamp (ms); cleared on page reload
+  // Plagiarism cache persists across panel close/reopen AND page refreshes (same tab).
+  // Keyed by assignment id param so different assignments don't bleed into each other.
+  const _plagCacheKey = `mag_plag_${new URLSearchParams(location.search).get('id') || 'x'}`;
+  /** @type {Record<string,{name:string,extractedText:string}>} */
+  const plagiarismCache = (() => {
+    try { const s = window.sessionStorage.getItem(_plagCacheKey); return s ? JSON.parse(s) : {}; }
+    catch { return {}; }
+  })();
+  function _savePlagCache() {
+    try { window.sessionStorage.setItem(_plagCacheKey, JSON.stringify(plagiarismCache)); }
+    catch {}
+  }
 
   /** @type {HTMLElement} */(document.getElementById('mag-grade-one')).onclick = () => {
     if (reviewOverlay.classList.contains('open')) {
