@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.6
+// @version      2.5.7
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -1845,13 +1845,28 @@ Check: same variable names, identical code logic, same written arguments, same p
       writing-mode: vertical-lr;
       margin: 0; padding: 6px 4px;
     }
-    /* Expanded bar snapped to right edge — stays horizontal, no writing-mode */
+    /* Expanded bar snapped to right edge — vertical column layout */
     #mag-bar.snapped-right:not(.collapsed) {
+      flex-direction: column;
+      align-items: stretch;
+      width: 148px;
       left: auto; right: 0;
       border-radius: 10px 0 0 10px;
       box-shadow: -3px 0 16px rgba(0,0,0,0.55);
       transform: none;
-      width: auto;
+      padding: 10px 8px;
+    }
+    #mag-bar.snapped-right:not(.collapsed) .mag-sep { display: none; }
+    #mag-bar.snapped-right:not(.collapsed) .mag-title {
+      text-align: center; margin-right: 0;
+      padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.2);
+    }
+    #mag-bar.snapped-right:not(.collapsed) #mag-status {
+      margin-left: 0; margin-top: auto;
+      font-size: 10px; white-space: normal; text-align: center;
+    }
+    #mag-bar.snapped-right:not(.collapsed) #mag-collapse-btn {
+      margin-left: 0; align-self: center; margin-top: 4px;
     }
     #mag-collapse-btn { margin-left: auto; font-size: 11px; padding: 3px 8px; opacity: 0.75; }
     #mag-collapse-btn:hover { opacity: 1; }
@@ -2206,30 +2221,42 @@ Check: same variable names, identical code logic, same written arguments, same p
   };
 
   document.getElementById('mag-collapse-btn').onclick = () => {
+    const wasSnappedRight = bar.classList.contains('snapped-right');
     const collapsed = bar.classList.toggle('collapsed');
     /** @type {HTMLButtonElement} */ (document.getElementById('mag-collapse-btn')).textContent =
       collapsed ? '' : '‹';
     set('barCollapsed', collapsed ? '1' : '');
     if (!collapsed) {
-      // Expanding: kill any active transition first so there's no border-radius flicker
       bar.style.transition = 'none';
       bar.classList.remove('snapped-right');
-      bar.style.width = ''; bar.style.borderRadius = ''; bar.style.transform = '';
-      // Restore floating position if bar was dragged, else let CSS default kick in
-      try {
-        const pos = JSON.parse(get('barPos') || 'null');
-        if (pos && !pos.snappedRight && pos.left != null) {
-          bar.style.left = pos.left + 'px';
-          bar.style.top  = pos.top  + 'px';
-          bar.style.right = 'auto';
-          bar.style.borderRadius = '10px';
-        } else {
+      bar.style.width = ''; bar.style.transform = '';
+
+      if (wasSnappedRight) {
+        // Expand in-place as vertical column on the right side
+        bar.classList.add('snapped-right');
+        bar.style.borderRadius = '';
+        bar.style.right = '0'; bar.style.left = 'auto';
+        try {
+          const pos = JSON.parse(get('barPos') || 'null');
+          if (pos?.top != null) bar.style.top = pos.top + 'px';
+        } catch {}
+      } else {
+        bar.style.borderRadius = '';
+        try {
+          const pos = JSON.parse(get('barPos') || 'null');
+          if (pos && !pos.snappedRight && pos.left != null) {
+            bar.style.left = pos.left + 'px';
+            bar.style.top  = pos.top  + 'px';
+            bar.style.right = 'auto';
+            bar.style.borderRadius = '10px';
+          } else {
+            bar.style.left = ''; bar.style.top = ''; bar.style.right = '';
+          }
+        } catch {
           bar.style.left = ''; bar.style.top = ''; bar.style.right = '';
         }
-      } catch {
-        bar.style.left = ''; bar.style.top = ''; bar.style.right = '';
       }
-      // Re-enable transitions after one paint
+
       requestAnimationFrame(() => { bar.style.transition = ''; });
     } else {
       applyBarPos();
@@ -2279,24 +2306,43 @@ Check: same variable names, identical code logic, same written arguments, same p
           grabX = ev.clientX - bar.offsetLeft;
           grabY = ev.clientY - bar.offsetTop;
         } else if (wasExpanded) {
-          // Detach expanded bar from its percentage/transform anchor
+          // Detach from percentage/transform anchor; snap-zone logic below handles left/right each frame
           bar.style.transform    = 'none';
-          bar.style.left         = rect.left + 'px';
-          bar.style.top          = rect.top  + 'px';
-          bar.style.right        = 'auto';
-          bar.style.width        = rect.width + 'px'; // freeze percentage width
+          bar.style.top          = rect.top + 'px';
           bar.style.borderRadius = '10px';
         } else {
           bar.style.right = 'auto';
         }
       }
 
-      const rawLeft = Math.max(0, Math.min(window.innerWidth  - bar.offsetWidth,  ev.clientX - grabX));
-      const rawTop  = Math.max(0, Math.min(window.innerHeight - bar.offsetHeight, ev.clientY - grabY));
-      // Magnetic pull: lock to right edge when within snap zone
-      const snapLeft = window.innerWidth - bar.offsetWidth;
-      bar.style.left = ((window.innerWidth - (rawLeft + bar.offsetWidth)) < SNAP_DIST ? snapLeft : rawLeft) + 'px';
-      bar.style.top  = rawTop + 'px';
+      const rawTop = Math.max(0, Math.min(window.innerHeight - bar.offsetHeight, ev.clientY - grabY));
+
+      if (wasExpanded) {
+        // Use mouse-cursor distance from right edge for snap decision — avoids width-feedback oscillation
+        const inSnapZone = (window.innerWidth - ev.clientX) < SNAP_DIST;
+        bar.style.top = rawTop + 'px';
+        if (inSnapZone) {
+          if (!bar.classList.contains('snapped-right')) {
+            bar.classList.add('snapped-right');
+            bar.style.borderRadius = ''; // let CSS rule apply (10px 0 0 10px)
+          }
+          bar.style.left = 'auto'; bar.style.right = '0';
+        } else {
+          if (bar.classList.contains('snapped-right')) {
+            bar.classList.remove('snapped-right');
+            bar.style.borderRadius = '10px'; // floating look
+          }
+          const rawLeft = Math.max(0, Math.min(window.innerWidth - bar.offsetWidth, ev.clientX - grabX));
+          bar.style.right = 'auto';
+          bar.style.left  = rawLeft + 'px';
+        }
+      } else {
+        // Collapsed: position-based magnetic snap (existing behaviour)
+        const rawLeft = Math.max(0, Math.min(window.innerWidth  - bar.offsetWidth,  ev.clientX - grabX));
+        const snapLeft = window.innerWidth - bar.offsetWidth;
+        bar.style.left = ((window.innerWidth - (rawLeft + bar.offsetWidth)) < SNAP_DIST ? snapLeft : rawLeft) + 'px';
+        bar.style.top  = rawTop + 'px';
+      }
     };
 
     const onUp = () => {
@@ -2305,46 +2351,40 @@ Check: same variable names, identical code logic, same written arguments, same p
       document.removeEventListener('mouseup',   onUp);
       if (!dragging) return;
 
-      const distFromRight = window.innerWidth - bar.getBoundingClientRect().right;
+      bar.style.transition = '';
 
-      if (distFromRight < SNAP_DIST) {
-        // Snap to right edge — collapse expanded bar first if needed
-        if (wasExpanded) {
-          bar.style.width        = '';
-          bar.style.borderRadius = '';
-          bar.classList.add('collapsed');
-          /** @type {HTMLButtonElement} */ (document.getElementById('mag-collapse-btn')).textContent = '';
-          set('barCollapsed', '1');
-        }
-
-        const targetLeft   = window.innerWidth - bar.offsetWidth;
-        const alreadyFlush = Math.abs(bar.offsetLeft - targetLeft) < 2;
-
-        const applySnap = () => {
-          bar.style.transition = '';
-          bar.classList.add('snapped-right');
+      if (wasExpanded) {
+        // Live preview already positioned the bar — just finalize state
+        if (bar.classList.contains('snapped-right')) {
           bar.style.left = 'auto'; bar.style.right = '0';
           set('barPos', JSON.stringify({ snappedRight: true, top: bar.offsetTop }));
-        };
-
-        if (alreadyFlush) {
-          applySnap();
         } else {
-          bar.style.transition = 'left 0.2s ease';
-          bar.style.left       = targetLeft + 'px';
-          const onEnd = (/** @type {TransitionEvent} */ ev) => {
-            if (ev.propertyName !== 'left') return;
-            bar.removeEventListener('transitionend', onEnd);
-            applySnap();
-          };
-          bar.addEventListener('transitionend', onEnd);
+          set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
         }
       } else {
-        bar.style.transition = '';
-        if (wasExpanded) {
-          // Keep expanded bar at dragged position; unfreeze width back to CSS percentage
-          bar.style.width = '';
-          set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
+        // Collapsed: slide-to-edge animation then snap, or save position
+        const distFromRight = window.innerWidth - bar.getBoundingClientRect().right;
+        if (distFromRight < SNAP_DIST) {
+          const targetLeft   = window.innerWidth - bar.offsetWidth;
+          const alreadyFlush = Math.abs(bar.offsetLeft - targetLeft) < 2;
+          const applySnap = () => {
+            bar.style.transition = '';
+            bar.classList.add('snapped-right');
+            bar.style.left = 'auto'; bar.style.right = '0';
+            set('barPos', JSON.stringify({ snappedRight: true, top: bar.offsetTop }));
+          };
+          if (alreadyFlush) {
+            applySnap();
+          } else {
+            bar.style.transition = 'left 0.2s ease';
+            bar.style.left = targetLeft + 'px';
+            const onEnd = (/** @type {TransitionEvent} */ ev) => {
+              if (ev.propertyName !== 'left') return;
+              bar.removeEventListener('transitionend', onEnd);
+              applySnap();
+            };
+            bar.addEventListener('transitionend', onEnd);
+          }
         } else {
           set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
         }
