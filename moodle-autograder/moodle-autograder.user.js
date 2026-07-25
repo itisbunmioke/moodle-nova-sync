@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.7
+// @version      2.5.8
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -1868,6 +1868,40 @@ Check: same variable names, identical code logic, same written arguments, same p
     #mag-bar.snapped-right:not(.collapsed) #mag-collapse-btn {
       margin-left: 0; align-self: center; margin-top: 4px;
     }
+    /* Left-edge snapped — collapsed pill */
+    #mag-bar.collapsed.snapped-left {
+      left: 0; right: auto;
+      border-radius: 0 10px 10px 0;
+      padding: 14px 7px;
+      box-shadow: 3px 0 16px rgba(0,0,0,0.55);
+    }
+    #mag-bar.collapsed.snapped-left #mag-collapse-btn {
+      writing-mode: vertical-lr;
+      margin: 0; padding: 6px 4px;
+    }
+    /* Left-edge snapped — expanded vertical column layout */
+    #mag-bar.snapped-left:not(.collapsed) {
+      flex-direction: column;
+      align-items: stretch;
+      width: 148px;
+      left: 0; right: auto;
+      border-radius: 0 10px 10px 0;
+      box-shadow: 3px 0 16px rgba(0,0,0,0.55);
+      transform: none;
+      padding: 10px 8px;
+    }
+    #mag-bar.snapped-left:not(.collapsed) .mag-sep { display: none; }
+    #mag-bar.snapped-left:not(.collapsed) .mag-title {
+      text-align: center; margin-right: 0;
+      padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.2);
+    }
+    #mag-bar.snapped-left:not(.collapsed) #mag-status {
+      margin-left: 0; margin-top: auto;
+      font-size: 10px; white-space: normal; text-align: center;
+    }
+    #mag-bar.snapped-left:not(.collapsed) #mag-collapse-btn {
+      margin-left: 0; align-self: center; margin-top: 4px;
+    }
     #mag-collapse-btn { margin-left: auto; font-size: 11px; padding: 3px 8px; opacity: 0.75; }
     #mag-collapse-btn:hover { opacity: 1; }
     .mag-btn {
@@ -2207,6 +2241,10 @@ Check: same variable names, identical code logic, same written arguments, same p
         bar.classList.add('snapped-right');
         bar.style.right = '0'; bar.style.left = 'auto';
         if (pos.top != null) bar.style.top = pos.top + 'px';
+      } else if (pos.snappedLeft) {
+        bar.classList.add('snapped-left');
+        bar.style.left = '0'; bar.style.right = 'auto';
+        if (pos.top != null) bar.style.top = pos.top + 'px';
       } else if (pos.left != null) {
         bar.style.right     = 'auto';
         bar.style.left      = pos.left + 'px';
@@ -2222,6 +2260,7 @@ Check: same variable names, identical code logic, same written arguments, same p
 
   document.getElementById('mag-collapse-btn').onclick = () => {
     const wasSnappedRight = bar.classList.contains('snapped-right');
+    const wasSnappedLeft  = bar.classList.contains('snapped-left');
     const collapsed = bar.classList.toggle('collapsed');
     /** @type {HTMLButtonElement} */ (document.getElementById('mag-collapse-btn')).textContent =
       collapsed ? '' : '‹';
@@ -2229,13 +2268,21 @@ Check: same variable names, identical code logic, same written arguments, same p
     if (!collapsed) {
       bar.style.transition = 'none';
       bar.classList.remove('snapped-right');
+      bar.classList.remove('snapped-left');
       bar.style.width = ''; bar.style.transform = '';
 
       if (wasSnappedRight) {
-        // Expand in-place as vertical column on the right side
         bar.classList.add('snapped-right');
         bar.style.borderRadius = '';
         bar.style.right = '0'; bar.style.left = 'auto';
+        try {
+          const pos = JSON.parse(get('barPos') || 'null');
+          if (pos?.top != null) bar.style.top = pos.top + 'px';
+        } catch {}
+      } else if (wasSnappedLeft) {
+        bar.classList.add('snapped-left');
+        bar.style.borderRadius = '';
+        bar.style.left = '0'; bar.style.right = 'auto';
         try {
           const pos = JSON.parse(get('barPos') || 'null');
           if (pos?.top != null) bar.style.top = pos.top + 'px';
@@ -2244,7 +2291,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         bar.style.borderRadius = '';
         try {
           const pos = JSON.parse(get('barPos') || 'null');
-          if (pos && !pos.snappedRight && pos.left != null) {
+          if (pos && !pos.snappedRight && !pos.snappedLeft && pos.left != null) {
             bar.style.left = pos.left + 'px';
             bar.style.top  = pos.top  + 'px';
             bar.style.right = 'auto';
@@ -2282,7 +2329,7 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     const SNAP_DIST = 80;
     let dragging = false;
-    const wasSnapped   = isCollapsed && bar.classList.contains('snapped-right');
+    const wasSnapped   = isCollapsed && (bar.classList.contains('snapped-right') || bar.classList.contains('snapped-left'));
     const wasExpanded  = !isCollapsed;
 
     // Capture initial visual rect BEFORE any class changes
@@ -2300,9 +2347,10 @@ Check: same variable names, identical code logic, same written arguments, same p
         if (wasSnapped) {
           // Unsnap on first movement (not on mousedown) so a plain click expands normally
           bar.classList.remove('snapped-right');
-          bar.style.right = 'auto';
+          bar.classList.remove('snapped-left');
           bar.style.left  = Math.max(0, ev.clientX - bar.offsetWidth  / 2) + 'px';
           bar.style.top   = Math.max(0, ev.clientY - bar.offsetHeight / 2) + 'px';
+          bar.style.right = 'auto';
           grabX = ev.clientX - bar.offsetLeft;
           grabY = ev.clientY - bar.offsetTop;
         } else if (wasExpanded) {
@@ -2318,29 +2366,35 @@ Check: same variable names, identical code logic, same written arguments, same p
       const rawTop = Math.max(0, Math.min(window.innerHeight - bar.offsetHeight, ev.clientY - grabY));
 
       if (wasExpanded) {
-        // Use mouse-cursor distance from right edge for snap decision — avoids width-feedback oscillation
-        const inSnapZone = (window.innerWidth - ev.clientX) < SNAP_DIST;
+        // Use mouse-cursor distance from each edge for snap zone — avoids width-feedback oscillation
+        const nearRight = (window.innerWidth - ev.clientX) < SNAP_DIST;
+        const nearLeft  = ev.clientX < SNAP_DIST;
         bar.style.top = rawTop + 'px';
-        if (inSnapZone) {
-          if (!bar.classList.contains('snapped-right')) {
-            bar.classList.add('snapped-right');
-            bar.style.borderRadius = ''; // let CSS rule apply (10px 0 0 10px)
-          }
+        if (nearRight) {
+          if (bar.classList.contains('snapped-left'))  { bar.classList.remove('snapped-left');  bar.style.borderRadius = '10px'; }
+          if (!bar.classList.contains('snapped-right')) { bar.classList.add('snapped-right'); bar.style.borderRadius = ''; }
           bar.style.left = 'auto'; bar.style.right = '0';
+        } else if (nearLeft) {
+          if (bar.classList.contains('snapped-right')) { bar.classList.remove('snapped-right'); bar.style.borderRadius = '10px'; }
+          if (!bar.classList.contains('snapped-left'))  { bar.classList.add('snapped-left');  bar.style.borderRadius = ''; }
+          bar.style.right = 'auto'; bar.style.left = '0';
         } else {
-          if (bar.classList.contains('snapped-right')) {
-            bar.classList.remove('snapped-right');
-            bar.style.borderRadius = '10px'; // floating look
-          }
+          if (bar.classList.contains('snapped-right')) { bar.classList.remove('snapped-right'); bar.style.borderRadius = '10px'; }
+          if (bar.classList.contains('snapped-left'))  { bar.classList.remove('snapped-left');  bar.style.borderRadius = '10px'; }
           const rawLeft = Math.max(0, Math.min(window.innerWidth - bar.offsetWidth, ev.clientX - grabX));
           bar.style.right = 'auto';
           bar.style.left  = rawLeft + 'px';
         }
       } else {
-        // Collapsed: position-based magnetic snap (existing behaviour)
-        const rawLeft = Math.max(0, Math.min(window.innerWidth  - bar.offsetWidth,  ev.clientX - grabX));
-        const snapLeft = window.innerWidth - bar.offsetWidth;
-        bar.style.left = ((window.innerWidth - (rawLeft + bar.offsetWidth)) < SNAP_DIST ? snapLeft : rawLeft) + 'px';
+        // Collapsed: position-based magnetic snap on both edges
+        const rawLeft   = Math.max(0, Math.min(window.innerWidth - bar.offsetWidth, ev.clientX - grabX));
+        const fromRight = window.innerWidth - (rawLeft + bar.offsetWidth);
+        const fromLeft  = rawLeft;
+        let finalLeft;
+        if (fromRight < SNAP_DIST)     finalLeft = window.innerWidth - bar.offsetWidth;
+        else if (fromLeft < SNAP_DIST) finalLeft = 0;
+        else                           finalLeft = rawLeft;
+        bar.style.left = finalLeft + 'px';
         bar.style.top  = rawTop + 'px';
       }
     };
@@ -2358,12 +2412,18 @@ Check: same variable names, identical code logic, same written arguments, same p
         if (bar.classList.contains('snapped-right')) {
           bar.style.left = 'auto'; bar.style.right = '0';
           set('barPos', JSON.stringify({ snappedRight: true, top: bar.offsetTop }));
+        } else if (bar.classList.contains('snapped-left')) {
+          bar.style.right = 'auto'; bar.style.left = '0';
+          set('barPos', JSON.stringify({ snappedLeft: true, top: bar.offsetTop }));
         } else {
           set('barPos', JSON.stringify({ left: bar.offsetLeft, top: bar.offsetTop }));
         }
       } else {
-        // Collapsed: slide-to-edge animation then snap, or save position
-        const distFromRight = window.innerWidth - bar.getBoundingClientRect().right;
+        // Collapsed: slide-to-edge animation then snap on right or left, or save position
+        const bcr          = bar.getBoundingClientRect();
+        const distFromRight = window.innerWidth - bcr.right;
+        const distFromLeft  = bcr.left;
+
         if (distFromRight < SNAP_DIST) {
           const targetLeft   = window.innerWidth - bar.offsetWidth;
           const alreadyFlush = Math.abs(bar.offsetLeft - targetLeft) < 2;
@@ -2378,6 +2438,26 @@ Check: same variable names, identical code logic, same written arguments, same p
           } else {
             bar.style.transition = 'left 0.2s ease';
             bar.style.left = targetLeft + 'px';
+            const onEnd = (/** @type {TransitionEvent} */ ev) => {
+              if (ev.propertyName !== 'left') return;
+              bar.removeEventListener('transitionend', onEnd);
+              applySnap();
+            };
+            bar.addEventListener('transitionend', onEnd);
+          }
+        } else if (distFromLeft < SNAP_DIST) {
+          const alreadyFlush = bar.offsetLeft < 2;
+          const applySnap = () => {
+            bar.style.transition = '';
+            bar.classList.add('snapped-left');
+            bar.style.right = 'auto'; bar.style.left = '0';
+            set('barPos', JSON.stringify({ snappedLeft: true, top: bar.offsetTop }));
+          };
+          if (alreadyFlush) {
+            applySnap();
+          } else {
+            bar.style.transition = 'left 0.2s ease';
+            bar.style.left = '0';
             const onEnd = (/** @type {TransitionEvent} */ ev) => {
               if (ev.propertyName !== 'left') return;
               bar.removeEventListener('transitionend', onEnd);
