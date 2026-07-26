@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.8
+// @version      2.5.9
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -202,7 +202,10 @@
     //                          update the visible content without a page reload
     const feedback = result.feedback || '';
     if (feedback) {
-      const feedbackHtml = '<p>' + feedback.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
+      // feedback may already be HTML (when images are attached)
+      const feedbackHtml = feedback.trimStart().startsWith('<')
+        ? feedback
+        : '<p>' + feedback.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
 
       const getEditorFrame = () => {
         const ta = /** @type {HTMLTextAreaElement|null} */(
@@ -2000,6 +2003,53 @@ Check: same variable names, identical code logic, same written arguments, same p
       resize: vertical; height: 90px; margin-top: 4px;
     }
     .mag-feedback-label { font-size: 11px; color: #9070c0; margin-bottom: 4px; }
+    /* Image attachment area */
+    .mag-fb-img-area {
+      display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px;
+      min-height: 28px; margin-top: 6px; padding: 5px;
+      border: 1px dashed #3a1a60; border-radius: 5px;
+      background: rgba(18,0,36,0.3); box-sizing: border-box; width: 100%;
+    }
+    .mag-fb-paste-hint {
+      font-size: 11px; color: #5a3090; font-style: italic;
+      padding: 2px 4px; width: 100%; text-align: center;
+    }
+    .mag-fb-img-wrap {
+      position: relative; display: inline-block; line-height: 0;
+    }
+    .mag-fb-img-wrap img {
+      display: block; max-width: 100%; border-radius: 3px;
+      border: 1px solid #4a2080;
+    }
+    .mag-fb-img-toolbar {
+      position: absolute; top: 3px; right: 3px;
+      display: flex; gap: 3px; opacity: 0; transition: opacity 0.15s;
+    }
+    .mag-fb-img-wrap:hover .mag-fb-img-toolbar { opacity: 1; }
+    .mag-fb-img-btn {
+      background: rgba(20,0,40,0.88); border: 1px solid #7040c0;
+      color: #d0b0ff; border-radius: 3px; padding: 2px 6px;
+      cursor: pointer; font-size: 10px; line-height: 1.5;
+    }
+    .mag-fb-img-btn:hover { background: rgba(80,30,160,0.88); }
+    .mag-fb-resize-handle {
+      position: absolute; bottom: 1px; right: 1px;
+      width: 13px; height: 13px; cursor: se-resize;
+      background: #7b2fff; border-radius: 3px 0 3px 0; opacity: 0.6;
+    }
+    .mag-fb-resize-handle:hover { opacity: 1; }
+    /* Crop modal */
+    #mag-crop-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.84);
+      z-index: 999998; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+    #mag-crop-wrap { position: relative; cursor: crosshair; user-select: none; }
+    #mag-crop-sel {
+      position: absolute; display: none;
+      border: 2px solid #a060ff; background: rgba(120,40,255,0.18);
+      pointer-events: none; box-sizing: border-box;
+    }
     .mag-justif-ta {
       width: 100%; box-sizing: border-box; background: #140025;
       border: 1px solid #3a1060; border-radius: 4px; color: #cdb8f0;
@@ -2497,6 +2547,185 @@ Check: same variable names, identical code logic, same written arguments, same p
   };
   settingsOverlay.addEventListener('click', e => { if (e.target === settingsOverlay) closeSettings(); });
 
+  // ── Feedback image paste / crop / resize ─────────────────────────────────
+
+  /** Show a full-screen crop modal. onConfirm receives a compressed data URL. */
+  function showCropModal(/** @type {string} */ dataUrl, /** @type {(url: string) => void} */ onConfirm) {
+    const img = new Image();
+    img.onload = () => {
+      const maxW  = window.innerWidth  * 0.82;
+      const maxH  = window.innerHeight * 0.66;
+      const scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+      const dW    = Math.round(img.naturalWidth  * scale);
+      const dH    = Math.round(img.naturalHeight * scale);
+
+      const overlay = document.createElement('div');
+      overlay.id = 'mag-crop-overlay';
+      overlay.innerHTML = `
+        <div style="color:#d0b0ff;font-size:13px;margin-bottom:10px;text-align:center">
+          Drag to select a crop region, or use Insert Full
+        </div>
+        <div id="mag-crop-wrap" style="width:${dW}px;height:${dH}px">
+          <img src="${dataUrl}" style="width:${dW}px;height:${dH}px;display:block;pointer-events:none">
+          <div id="mag-crop-sel"></div>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:10px">
+          <button id="mag-crop-ok"     style="background:#7b2fff;border:none;color:#fff;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px">✂ Crop &amp; Insert</button>
+          <button id="mag-crop-full"   style="background:#2a1050;border:1px solid #7040c0;color:#d0b0ff;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px">Insert Full</button>
+          <button id="mag-crop-cancel" style="background:#1a0030;border:1px solid #4a2060;color:#9070c0;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px">Cancel</button>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      const wrap = /** @type {HTMLElement} */(document.getElementById('mag-crop-wrap'));
+      const sel  = /** @type {HTMLElement} */(document.getElementById('mag-crop-sel'));
+      let sx = 0, sy = 0, active = false;
+      /** @type {{x:number,y:number,w:number,h:number}|null} */ let cropRect = null;
+
+      wrap.addEventListener('mousedown', ev => {
+        ev.preventDefault();
+        const r = wrap.getBoundingClientRect();
+        sx = ev.clientX - r.left; sy = ev.clientY - r.top;
+        active = true; cropRect = null;
+        Object.assign(sel.style, { display:'block', left:sx+'px', top:sy+'px', width:'0', height:'0' });
+      });
+      const onDragMove = (/** @type {MouseEvent} */ ev) => {
+        if (!active) return;
+        const r  = wrap.getBoundingClientRect();
+        const cx = Math.max(0, Math.min(dW, ev.clientX - r.left));
+        const cy = Math.max(0, Math.min(dH, ev.clientY - r.top));
+        Object.assign(sel.style, {
+          left: Math.min(sx,cx)+'px', top: Math.min(sy,cy)+'px',
+          width: Math.abs(cx-sx)+'px', height: Math.abs(cy-sy)+'px',
+        });
+      };
+      const onDragUp = (/** @type {MouseEvent} */ ev) => {
+        if (!active) return;
+        active = false;
+        const r  = wrap.getBoundingClientRect();
+        const cx = Math.max(0, Math.min(dW, ev.clientX - r.left));
+        const cy = Math.max(0, Math.min(dH, ev.clientY - r.top));
+        const w  = Math.abs(cx - sx) / scale;
+        const h  = Math.abs(cy - sy) / scale;
+        if (w > 5 && h > 5) cropRect = {
+          x: Math.min(sx, cx) / scale, y: Math.min(sy, cy) / scale, w, h,
+        };
+      };
+      document.addEventListener('mousemove', onDragMove);
+      document.addEventListener('mouseup',   onDragUp);
+
+      /** Compress to JPEG ≤ maxSide wide and call onConfirm */
+      const compress = (/** @type {HTMLImageElement} */ srcImg, /** @type {number} */ sx2, /** @type {number} */ sy2, /** @type {number} */ sw, /** @type {number} */ sh, maxSide = 900) => {
+        const ratio = Math.min(1, maxSide / sw, maxSide / sh);
+        const c = document.createElement('canvas');
+        c.width = Math.round(sw * ratio); c.height = Math.round(sh * ratio);
+        /** @type {CanvasRenderingContext2D} */ (c.getContext('2d')).drawImage(srcImg, sx2, sy2, sw, sh, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', 0.86);
+      };
+
+      const btnOk     = /** @type {HTMLElement} */ (document.getElementById('mag-crop-ok'));
+      const btnFull   = /** @type {HTMLElement} */ (document.getElementById('mag-crop-full'));
+      const btnCancel = /** @type {HTMLElement} */ (document.getElementById('mag-crop-cancel'));
+
+      btnOk.onclick = () => {
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup',   onDragUp);
+        overlay.remove();
+        if (cropRect) onConfirm(compress(img, cropRect.x, cropRect.y, cropRect.w, cropRect.h));
+        else          onConfirm(compress(img, 0, 0, img.naturalWidth, img.naturalHeight));
+      };
+      btnFull.onclick = () => {
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup',   onDragUp);
+        overlay.remove();
+        onConfirm(compress(img, 0, 0, img.naturalWidth, img.naturalHeight));
+      };
+      btnCancel.onclick = () => {
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup',   onDragUp);
+        overlay.remove();
+      };
+      overlay.addEventListener('keydown', ev => { if (ev.key === 'Escape') overlay.remove(); });
+    };
+    img.src = dataUrl;
+  }
+
+  /** Insert a (possibly cropped) image into a card's image attachment area */
+  function insertFeedbackImage(/** @type {string} */ uid, /** @type {string} */ dataUrl) {
+    const imgArea = document.getElementById(`mag-fbimg-${uid}`);
+    if (!imgArea) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'mag-fb-img-wrap';
+
+    const img = document.createElement('img');
+    img.className = 'mag-fb-img';
+    img.src       = dataUrl;
+    img.draggable = false;
+    img.onload    = () => { img.style.width = Math.min(400, img.naturalWidth) + 'px'; };
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'mag-fb-img-toolbar';
+    toolbar.innerHTML = '<button class="mag-fb-img-btn" title="Re-crop">✂</button>' +
+                        '<button class="mag-fb-img-btn" title="Remove">✕</button>';
+
+    const handle = document.createElement('div');
+    handle.className = 'mag-fb-resize-handle';
+
+    wrap.append(img, toolbar, handle);
+    imgArea.appendChild(wrap);
+
+    // Hide hint
+    const hint = imgArea.querySelector('.mag-fb-paste-hint');
+    if (hint) /** @type {HTMLElement} */(hint).style.display = 'none';
+
+    // Re-crop
+    /** @type {HTMLButtonElement} */(toolbar.children[0]).onclick = () =>
+      showCropModal(img.src, url => { img.src = url; });
+
+    // Delete
+    /** @type {HTMLButtonElement} */(toolbar.children[1]).onclick = () => {
+      wrap.remove();
+      if (!imgArea.querySelector('.mag-fb-img-wrap') && hint)
+        /** @type {HTMLElement} */(hint).style.display = '';
+    };
+
+    // Resize drag
+    handle.addEventListener('mousedown', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      const x0 = ev.clientX, w0 = img.offsetWidth;
+      const onM = (/** @type {MouseEvent} */ e) => { img.style.width = Math.max(60, w0 + e.clientX - x0) + 'px'; };
+      const onU = () => { document.removeEventListener('mousemove', onM); document.removeEventListener('mouseup', onU); };
+      document.addEventListener('mousemove', onM);
+      document.addEventListener('mouseup',   onU);
+    });
+  }
+
+  // Global paste listener — intercepts image pastes when focus is inside any MAG card
+  document.addEventListener('paste', ev => {
+    const items = ev.clipboardData?.items;
+    if (!items) return;
+    let imgItem = null;
+    for (const item of items) { if (item.type.startsWith('image/')) { imgItem = item; break; } }
+    if (!imgItem) return;
+
+    const card = /** @type {HTMLElement|null} */(document.activeElement)?.closest?.('[id^="mag-card-"]')
+              || /** @type {HTMLElement} */(ev.target)?.closest?.('[id^="mag-card-"]');
+    if (!card) return;
+    const uid = card.id.replace('mag-card-', '');
+    if (!document.getElementById(`mag-fbimg-${uid}`)) return;
+
+    ev.preventDefault();
+    const blob = imgItem.getAsFile();
+    if (!blob) return;
+    const reader = new FileReader();
+    reader.onload = e2 => {
+      const url = /** @type {string} */(e2.target?.result);
+      if (url) showCropModal(url, cropped => insertFeedbackImage(uid, cropped));
+    };
+    reader.readAsDataURL(blob);
+  }, true); // capture phase so it fires even when textarea has focus
+
   // ── Review panel ─────────────────────────────────────────────────────────
   const reviewOverlay = document.createElement('div');
   reviewOverlay.id = 'mag-review-overlay';
@@ -2579,7 +2808,10 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     const feedbackArea = result && !result.error && !result.moodleGraded
       ? `<div class="mag-feedback-label">Instructor feedback (editable before posting):</div>
-         <textarea class="mag-feedback-area" id="mag-fb-${student.uid}">${result.feedback || ''}</textarea>`
+         <textarea class="mag-feedback-area" id="mag-fb-${student.uid}">${result.feedback || ''}</textarea>
+         <div class="mag-fb-img-area" id="mag-fbimg-${student.uid}">
+           <span class="mag-fb-paste-hint">📎 Paste a screenshot here (Ctrl+V)</span>
+         </div>`
       : '';
 
     card.innerHTML = `
@@ -2715,7 +2947,22 @@ Check: same variable names, identical code logic, same written arguments, same p
         const fbEl = document.getElementById(`mag-fb-${student.uid}`);
         // Use the textarea value as-is — null means the element isn't in the DOM (fall back to
         // AI result), but an empty string means the instructor deliberately cleared it.
-        const editedFeedback = fbEl !== null ? fbEl.value : (result.feedback || '');
+        const rawText = fbEl !== null ? /** @type {HTMLTextAreaElement} */(fbEl).value : (result.feedback || '');
+        const imgEls  = /** @type {NodeListOf<HTMLImageElement>} */(
+          document.querySelectorAll(`#mag-fbimg-${student.uid} img.mag-fb-img`)
+        );
+        let editedFeedback;
+        if (imgEls.length > 0) {
+          const textHtml = rawText
+            ? '<p>' + rawText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>'
+            : '';
+          const imgHtml  = Array.from(imgEls).map(im =>
+            `<p><img src="${im.src}" style="max-width:${im.style.width||'400px'};height:auto"></p>`
+          ).join('');
+          editedFeedback = textHtml + imgHtml;
+        } else {
+          editedFeedback = rawText;
+        }
         const editedResult   = { ...result, scores: editedScores, feedback: editedFeedback };
 
         await postGrade(student, rubric, editedResult, assignmentId);
