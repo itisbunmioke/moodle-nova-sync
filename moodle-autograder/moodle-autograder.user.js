@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.10
+// @version      2.5.11
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -2044,7 +2044,7 @@ Check: same variable names, identical code logic, same written arguments, same p
     /* Crop modal */
     #mag-crop-overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,0.84);
-      z-index: 999998; display: flex; flex-direction: column;
+      z-index: 1000001; display: flex; flex-direction: column;
       align-items: center; justify-content: center;
     }
     #mag-crop-wrap { position: relative; cursor: crosshair; user-select: none; }
