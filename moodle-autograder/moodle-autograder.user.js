@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.11
+// @version      2.5.12
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -1996,13 +1996,28 @@ Check: same variable names, identical code logic, same written arguments, same p
     .mag-scores-table td { padding: 4px 8px; border-bottom: 1px solid #1a0030; vertical-align: top; }
     .mag-scores-table select { background: #2a0050; border: 1px solid #5a30a0; color: #f0e8ff; border-radius: 4px; padding: 2px 6px; font-size: 12px; }
     .mag-score-deducted { background: rgba(200, 90, 10, 0.22); border-left: 2px solid rgba(220, 130, 30, 0.65); }
+    .mag-fb-toolbar {
+      display: flex; gap: 3px; margin-top: 4px; margin-bottom: 2px;
+    }
+    .mag-fb-fmt-btn {
+      background: #2a0050; border: 1px solid #5a30a0; color: #c090ff;
+      border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 12px;
+      line-height: 1.5; transition: background 0.1s;
+      font-family: sans-serif;
+    }
+    .mag-fb-fmt-btn:hover  { background: #3d0080; }
+    .mag-fb-fmt-btn b  { font-weight: 700; }
+    .mag-fb-fmt-btn em { font-style: italic; }
+    .mag-fb-fmt-btn u  { text-decoration: underline; }
     .mag-feedback-area {
       width: 100%; box-sizing: border-box; background: #1a0030;
       border: 1px solid #4a2080; border-radius: 6px; color: #f0e8ff;
       padding: 8px 10px; font-size: 12px; font-family: sans-serif;
-      resize: vertical; height: 90px; margin-top: 4px;
+      min-height: 90px; margin-top: 0; outline: none; overflow-y: auto;
+      line-height: 1.5; white-space: pre-wrap;
     }
-    .mag-feedback-label { font-size: 11px; color: #9070c0; margin-bottom: 4px; }
+    .mag-feedback-area:focus { border-color: #7b2fff; }
+    .mag-feedback-label { font-size: 11px; color: #9070c0; margin-bottom: 2px; }
     /* Image attachment area */
     .mag-fb-img-area {
       display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px;
@@ -2826,9 +2841,18 @@ Check: same variable names, identical code logic, same written arguments, same p
       <div class="mag-overall-comment">${result.overallComment || ''}</div>
     `;
 
+    const rawFb = result && !result.error && !result.moodleGraded ? (result.feedback || '') : '';
+    const fbHtml = rawFb.trimStart().startsWith('<')
+      ? rawFb
+      : rawFb ? '<p>' + rawFb.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>' : '';
     const feedbackArea = result && !result.error && !result.moodleGraded
       ? `<div class="mag-feedback-label">Instructor feedback (editable before posting):</div>
-         <textarea class="mag-feedback-area" id="mag-fb-${student.uid}">${result.feedback || ''}</textarea>
+         <div class="mag-fb-toolbar">
+           <button class="mag-fb-fmt-btn" data-cmd="bold"      title="Bold (Ctrl+B)"><b>B</b></button>
+           <button class="mag-fb-fmt-btn" data-cmd="italic"    title="Italic (Ctrl+I)"><em>I</em></button>
+           <button class="mag-fb-fmt-btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+         </div>
+         <div class="mag-feedback-area" id="mag-fb-${student.uid}" contenteditable="true">${fbHtml}</div>
          <div class="mag-fb-img-area" id="mag-fbimg-${student.uid}">
            <span class="mag-fb-paste-hint">📎 Paste a screenshot here (Ctrl+V)</span>
          </div>`
@@ -2877,6 +2901,28 @@ Check: same variable names, identical code logic, same written arguments, same p
     const postBtn = /** @type {HTMLButtonElement|null} */(document.getElementById(`mag-post-${student.uid}`));
     const skipBtn = document.getElementById(`mag-skip-${student.uid}`);
     if (!postBtn) return;
+
+    // Wire formatting toolbar buttons + keyboard shortcuts on the contenteditable feedback div
+    const fbDiv = document.getElementById(`mag-fb-${student.uid}`);
+    if (fbDiv) {
+      // Toolbar buttons
+      const toolbar = fbDiv.previousElementSibling;
+      if (toolbar && toolbar.classList.contains('mag-fb-toolbar')) {
+        for (const btn of /** @type {NodeListOf<HTMLButtonElement>} */(toolbar.querySelectorAll('.mag-fb-fmt-btn'))) {
+          btn.addEventListener('mousedown', ev => {
+            ev.preventDefault(); // keep focus in fbDiv
+            document.execCommand(btn.dataset.cmd || '');
+          });
+        }
+      }
+      // Keyboard shortcuts
+      fbDiv.addEventListener('keydown', ev => {
+        if (!ev.ctrlKey && !ev.metaKey) return;
+        const map = /** @type {Record<string,string>} */({ b: 'bold', i: 'italic', u: 'underline' });
+        const cmd = map[ev.key.toLowerCase()];
+        if (cmd) { ev.preventDefault(); document.execCommand(cmd); }
+      });
+    }
 
     // Wire score-select changes to update the scaled total in real time
     const totalSpan    = document.getElementById(`mag-total-${student.uid}`);
@@ -2965,9 +3011,8 @@ Check: same variable names, identical code logic, same written arguments, same p
           };
         });
         const fbEl = document.getElementById(`mag-fb-${student.uid}`);
-        // Use the textarea value as-is — null means the element isn't in the DOM (fall back to
-        // AI result), but an empty string means the instructor deliberately cleared it.
-        const rawText = fbEl !== null ? /** @type {HTMLTextAreaElement} */(fbEl).value : (result.feedback || '');
+        // Read innerHTML from the contenteditable div (null → element not in DOM, fall back to AI result).
+        const rawText = fbEl !== null ? fbEl.innerHTML : (result.feedback || '');
         const imgEls  = /** @type {NodeListOf<HTMLImageElement>} */(
           document.querySelectorAll(`#mag-fbimg-${student.uid} img.mag-fb-img`)
         );
