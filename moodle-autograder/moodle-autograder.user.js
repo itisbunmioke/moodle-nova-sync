@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.9
+// @version      2.5.10
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -2033,11 +2033,14 @@ Check: same variable names, identical code logic, same written arguments, same p
     }
     .mag-fb-img-btn:hover { background: rgba(80,30,160,0.88); }
     .mag-fb-resize-handle {
-      position: absolute; bottom: 1px; right: 1px;
-      width: 13px; height: 13px; cursor: se-resize;
-      background: #7b2fff; border-radius: 3px 0 3px 0; opacity: 0.6;
+      position: absolute; width: 12px; height: 12px;
+      background: #7b2fff; opacity: 0.55; transition: opacity 0.12s;
     }
     .mag-fb-resize-handle:hover { opacity: 1; }
+    .mag-fb-resize-handle[data-corner="nw"] { top:1px;  left:1px;  cursor:nw-resize; border-radius:0 3px 0 3px; }
+    .mag-fb-resize-handle[data-corner="ne"] { top:1px;  right:1px; cursor:ne-resize; border-radius:3px 0 3px 0; }
+    .mag-fb-resize-handle[data-corner="sw"] { bottom:1px; left:1px;  cursor:sw-resize; border-radius:3px 0 3px 0; }
+    .mag-fb-resize-handle[data-corner="se"] { bottom:1px; right:1px; cursor:se-resize; border-radius:0 3px 0 3px; }
     /* Crop modal */
     #mag-crop-overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,0.84);
@@ -2669,10 +2672,15 @@ Check: same variable names, identical code logic, same written arguments, same p
     toolbar.innerHTML = '<button class="mag-fb-img-btn" title="Re-crop">✂</button>' +
                         '<button class="mag-fb-img-btn" title="Remove">✕</button>';
 
-    const handle = document.createElement('div');
-    handle.className = 'mag-fb-resize-handle';
+    const corners = ['nw', 'ne', 'sw', 'se'];
+    const handles = corners.map(c => {
+      const h = document.createElement('div');
+      h.className = 'mag-fb-resize-handle';
+      h.dataset.corner = c;
+      return h;
+    });
 
-    wrap.append(img, toolbar, handle);
+    wrap.append(img, toolbar, ...handles);
     imgArea.appendChild(wrap);
 
     // Hide hint
@@ -2690,14 +2698,26 @@ Check: same variable names, identical code logic, same written arguments, same p
         /** @type {HTMLElement} */(hint).style.display = '';
     };
 
-    // Resize drag
-    handle.addEventListener('mousedown', ev => {
-      ev.preventDefault(); ev.stopPropagation();
-      const x0 = ev.clientX, w0 = img.offsetWidth;
-      const onM = (/** @type {MouseEvent} */ e) => { img.style.width = Math.max(60, w0 + e.clientX - x0) + 'px'; };
-      const onU = () => { document.removeEventListener('mousemove', onM); document.removeEventListener('mouseup', onU); };
-      document.addEventListener('mousemove', onM);
-      document.addEventListener('mouseup',   onU);
+    // Resize drag — all four corners
+    handles.forEach(h => {
+      h.addEventListener('mousedown', ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        const corner = h.dataset.corner || 'se';
+        const x0 = ev.clientX, y0 = ev.clientY;
+        const w0 = img.offsetWidth, h0 = img.offsetHeight;
+        const aspect = h0 > 0 ? w0 / h0 : 1;
+        const onM = (/** @type {MouseEvent} */ e) => {
+          const dx = e.clientX - x0, dy = e.clientY - y0;
+          // For left-edge corners, dragging left grows the image
+          const xDelta = (corner === 'nw' || corner === 'sw') ? -dx : dx;
+          // Use whichever delta is larger in magnitude; keep aspect ratio
+          const delta = Math.abs(xDelta) >= Math.abs(dy) ? xDelta : (corner === 'nw' || corner === 'ne' ? -dy : dy) * aspect;
+          img.style.width = Math.max(60, w0 + delta) + 'px';
+        };
+        const onU = () => { document.removeEventListener('mousemove', onM); document.removeEventListener('mouseup', onU); };
+        document.addEventListener('mousemove', onM);
+        document.addEventListener('mouseup',   onU);
+      });
     });
   }
 
