@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.12
+// @version      2.5.13
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -1834,6 +1834,7 @@ Check: same variable names, identical code logic, same written arguments, same p
     #mag-bar.collapsed .mag-title,
     #mag-bar.collapsed .mag-sep,
     #mag-bar.collapsed #mag-grade-one,
+    #mag-bar.collapsed #mag-grade-5,
     #mag-bar.collapsed #mag-grade-all,
     #mag-bar.collapsed #mag-settings-btn,
     #mag-bar.collapsed #mag-status { display: none; }
@@ -2179,6 +2180,7 @@ Check: same variable names, identical code logic, same written arguments, same p
     <span class="mag-title">✦ Moodle AutoGrader</span>
     <span class="mag-sep">|</span>
     <button class="mag-btn primary" id="mag-grade-one">Grade submission ▸</button>
+    <button class="mag-btn" id="mag-grade-5" style="background:rgba(80,40,160,0.45);border-color:rgba(160,100,255,0.6)" title="Auto-grade and post the next 5 ungraded students">Grade 5 ▸▸</button>
     <button class="mag-btn" id="mag-grade-all" style="background:rgba(180,80,20,0.35);border-color:rgba(255,150,60,0.5)" title="Auto-grade and post every student in sequence">Grade All ▸▸</button>
     <span class="mag-sep">|</span>
     <button class="mag-btn" id="mag-settings-btn">⚙ Settings</button>
@@ -2961,8 +2963,8 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     let regradeConfirmed = false;
     postBtn.onclick = async () => {
-      // Re-grade protection: warn if Moodle already has rubric levels set (skip in Grade All)
-      if (!gradeAllActive) {
+      // Re-grade protection: warn if Moodle already has rubric levels set (skip in auto-grade modes)
+      if (!isAutoGrading()) {
         const moodleAlreadyGraded = !!document.querySelector(
           '.level.checked, .level[aria-checked="true"], td.level[data-checked="1"], ' +
           '.advancedgrading .checked, [id*="rubric"] .checked'
@@ -3040,8 +3042,8 @@ Check: same variable names, identical code logic, same written arguments, same p
         document.getElementById(`mag-card-${student.uid}`).style.opacity = '0.7';
         applyResultToLiveDom(rubric, editedResult);
 
-        // Grade All: auto-navigate without showing interaction buttons
-        if (gradeAllActive) {
+        // Auto-grade modes: navigate without showing interaction buttons
+        if (isAutoGrading()) {
           const sn = /** @type {HTMLElement|null} */(document.querySelector(
             'button[name="saveandshownext"], input[name="saveandshownext"], ' +
             '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
@@ -3396,7 +3398,8 @@ Check: same variable names, identical code logic, same written arguments, same p
           const pb2 = /** @type {HTMLButtonElement|null} */(document.getElementById('mag-plag-btn'));
           if (pb2) pb2.disabled = Object.keys(plagiarismCache).length < 2;
         }
-        if (gradeAllActive) {
+        if (isAutoGrading()) {
+          if (gradeNRemaining > 0) gradeNRemaining--;
           setStatus(`${student.name} graded — auto-posting…`, '#c9a0ff');
           await sleep(300);
           const pb = /** @type {HTMLButtonElement|null} */(document.getElementById(`mag-post-${student.uid}`));
@@ -3472,15 +3475,16 @@ Check: same variable names, identical code logic, same written arguments, same p
     if (navSlot) {
       navSlot.appendChild(prevBtn);
       navSlot.appendChild(nextBtn);
-      if (gradeAllActive) {
+      if (isAutoGrading()) {
         const stopBtn = document.createElement('button');
         stopBtn.className = 'mag-btn';
         stopBtn.style.cssText = 'background:#6a1010;border-color:#a03030;margin-left:4px';
         stopBtn.textContent = '⬛ Stop Auto';
         stopBtn.onclick = () => {
           gradeAllActive = false;
+          gradeNRemaining = 0;
           stopBtn.remove();
-          setStatus('Grade All stopped.', '#9070c0');
+          setStatus('Auto-grading stopped.', '#9070c0');
         };
         navSlot.appendChild(stopBtn);
       }
@@ -3559,11 +3563,11 @@ Check: same variable names, identical code logic, same written arguments, same p
         const isMoodleGraded = !!results[newUid].moodleGraded;
         setStatus(
           `${student.name} — ${isMoodleGraded ? 'rubric already set in Moodle' : 'already graded'}.` +
-          (gradeAllActive ? ' Skipping…' : isMoodleGraded ? '' : " Post, or click 'Grade submission' to re-grade."),
+          (isAutoGrading() ? ' Skipping…' : isMoodleGraded ? '' : " Post, or click 'Grade submission' to re-grade."),
           '#9070c0'
         );
         // Status chip and regrade button are rendered correctly by buildStudentCard for moodleGraded.
-        if (gradeAllActive) await autoAdvance();
+        if (isAutoGrading()) await autoAdvance();
         return;
       }
 
@@ -3595,9 +3599,9 @@ Check: same variable names, identical code logic, same written arguments, same p
 
       if (gradedInMoodle) {
         if (!results[newUid]) results[newUid] = { moodleGraded: true };
-        setStatus(`${student.name} — rubric already set in Moodle.${gradeAllActive ? ' Skipping…' : ''}`, '#9070c0');
+        setStatus(`${student.name} — rubric already set in Moodle.${isAutoGrading() ? ' Skipping…' : ''}`, '#9070c0');
         panel.updateCard(student, { moodleGraded: true });
-        if (gradeAllActive) await autoAdvance();
+        if (isAutoGrading()) await autoAdvance();
       } else {
         // Not graded anywhere yet — auto-grade now
         await gradeCurrentStudent();
@@ -3636,7 +3640,7 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     // Poll every 250 ms — catches any navigation Moodle performs
     const navWatcher = setInterval(() => {
-      if (!reviewOverlay.classList.contains('open')) { clearInterval(navWatcher); activeGradeCurrentFn = null; gradeAllActive = false; return; }
+      if (!reviewOverlay.classList.contains('open')) { clearInterval(navWatcher); activeGradeCurrentFn = null; gradeAllActive = false; gradeNRemaining = 0; return; }
       detectNav();
     }, 250);
 
@@ -3652,7 +3656,9 @@ Check: same variable names, identical code logic, same written arguments, same p
   // Holds the gradeCurrentStudent fn of the active session so the toolbar button
   // can re-trigger grading for the currently focused student without opening a new panel.
   let activeGradeCurrentFn = /** @type {(()=>Promise<void>)|null} */ (null);
-  let gradeAllActive = false; // set true by "Grade All" — triggers auto-post and auto-advance
+  let gradeAllActive  = false; // set true by "Grade All" — triggers auto-post and auto-advance
+  let gradeNRemaining = 0;    // set to N by "Grade N" — decrements after each auto-post; stops at 0
+  const isAutoGrading = () => gradeAllActive || gradeNRemaining > 0;
   const exhaustedGithubPats = new Map(); // PAT -> reset timestamp (ms); cleared on page reload
   // Plagiarism cache persists across panel close/reopen AND page refreshes (same tab).
   // Keyed by assignment id param so different assignments don't bleed into each other.
@@ -3678,10 +3684,16 @@ Check: same variable names, identical code logic, same written arguments, same p
     }
   };
 
+  /** @type {HTMLElement} */(document.getElementById('mag-grade-5')).onclick = () => {
+    if (reviewOverlay.classList.contains('open')) return; // already open
+    gradeNRemaining = 5;
+    runGradeOne().catch(e => { gradeNRemaining = 0; setStatus('⚠ ' + e.message, '#ff9060'); });
+  };
+
   /** @type {HTMLElement} */(document.getElementById('mag-grade-all')).onclick = () => {
     if (reviewOverlay.classList.contains('open')) return; // already open
     gradeAllActive = true;
-    runGradeOne().catch(e => { gradeAllActive = false; setStatus('⚠ ' + e.message, '#ff9060'); });
+    runGradeOne().catch(e => { gradeAllActive = false; gradeNRemaining = 0; setStatus('⚠ ' + e.message, '#ff9060'); });
   };
 
   // Show first-run prompt if no keys configured
