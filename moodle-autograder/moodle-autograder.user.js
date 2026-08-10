@@ -4,6 +4,8 @@
 // @version      2.5.15
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
+// @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
+// @downloadURL  https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
 // @match        *://students.willisonline.ca/mod/assign/*
 // @grant        GM_setValue
 // @grant        GM_getValue
