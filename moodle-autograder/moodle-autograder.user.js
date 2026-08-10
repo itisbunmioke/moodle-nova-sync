@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.15
+// @version      2.5.16
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1272,8 +1272,11 @@ Before naming any specific element in feedback — a function, column, heading, 
     } catch (e) {
       throw new Error(`GitHub Models network error: ${/** @type {Error} */(e).message}`);
     }
-    if (r.status === 0) throw new Error('GitHub Models: request blocked (status 0)');
-    if (r.status >= 400) throw new Error(`GitHub Models [HTTP ${r.status}]: ${r.responseText.slice(0, 200)}`);
+    if (r.status === 0)   throw new Error('GitHub Models: request blocked (status 0)');
+    if (r.status === 401) throw new Error(`GitHub Models: token rejected (HTTP 401) — check your PAT in ⚙ Settings`);
+    if (r.status === 404) throw new Error(`GitHub Models: model "${CFG.githubModel}" not found (HTTP 404) — check the model name in ⚙ Settings`);
+    if (r.status === 429) throw new Error(`GitHub Models: rate limit hit (HTTP 429) — ${r.responseText.slice(0, 120) || 'try again later'}`);
+    if (r.status >= 400) throw new Error(`GitHub Models [HTTP ${r.status}] (model: ${CFG.githubModel}): ${r.responseText.slice(0, 200) || '(empty response)'}`);
     if (!r.responseText.trim()) throw new Error(`GitHub Models [HTTP ${r.status}]: empty response from API`);
     let data;
     try { data = JSON.parse(r.responseText); }
