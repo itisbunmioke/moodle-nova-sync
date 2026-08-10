@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.17
+// @version      2.5.18
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -28,16 +28,12 @@
     `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${k}`;
   const OPENROUTER_ENDPOINT  = 'https://openrouter.ai/api/v1/chat/completions';
   const HF_ENDPOINT          = 'https://api-inference.huggingface.co/v1/chat/completions';
-  const GITHUB_ENDPOINT      = 'https://models.inference.ai.azure.com/chat/completions';
+
   const OLLAMA_ENDPOINT      = 'http://localhost:11434/v1/chat/completions';
   const CLAUDE_ENDPOINT      = 'https://api.anthropic.com/v1/messages';
   const CLAUDE_MODEL         = 'claude-haiku-4-5-20251001';
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
   const HF_DEFAULT           = 'meta-llama/Llama-3.1-8B-Instruct';
-  const GITHUB_DEFAULT       = 'openai/gpt-4o-mini';
-  // Fallback chain tried in order when the configured model returns 404.
-  // Names match the GitHub Models marketplace API IDs (provider/model format).
-  const GITHUB_FALLBACKS     = ['gpt-4o-mini', 'openai/gpt-4o', 'gpt-4o'];
   const OLLAMA_DEFAULT       = 'phi3';
   const GEMINI_DEFAULT       = 'gemini-2.0-flash';
 
@@ -52,12 +48,10 @@
     get openrouterModel()     { return get('openrouter_model', OPENROUTER_DEFAULT); },
     get hfKey()               { return get('hf_key'); },
     get hfModel()             { return get('hf_model', HF_DEFAULT); },
-    get githubKey()           { return get('github_key'); },
-    get githubKeys()          { return get('github_key').split(/[\n,]+/).map((/** @type {string} */ k) => k.trim()).filter(Boolean); },
-    get githubModel()         { return get('github_model', GITHUB_DEFAULT); },
+
     get ollamaEnabled()       { return get('ollama_enabled', 'false') === 'true'; },
     get ollamaModel()         { return get('ollama_model', OLLAMA_DEFAULT); },
-    get aiKey()               { return CFG.geminiKey || CFG.hfKey || CFG.githubKey || CFG.ollamaEnabled || CFG.openrouterKey; },
+    get aiKey()               { return CFG.geminiKey || CFG.hfKey || CFG.ollamaEnabled || CFG.openrouterKey; },
     get claudeKey()           { return get('claude_key'); },
     get useClaudeForFeedback(){ return get('claude_feedback', 'true') === 'true'; },
     get instructorName()      { return get('instructor_name', 'Instructor'); },
@@ -541,7 +535,7 @@
       return { text: zipText, inlineData: null, innerFilenames };
     }
     if (ext === 'pdf' || mime.includes('pdf')) {
-      // Try text extraction first — works with all AI models including GitHub Models/OpenRouter.
+      // Try text extraction first — works with all text-based AI models (HuggingFace, OpenRouter, Ollama).
       // Fall back to base64 inlineData only for Gemini (handles scanned/image PDFs).
       const extracted = await pdfToText(buffer);
       if (extracted && extracted.length > 30) {
@@ -1253,57 +1247,6 @@ Before naming any specific element in feedback — a function, column, heading, 
     return data.content?.[0]?.text || '';
   }
 
-  /** @param {string} promptText @param {string} [key] @param {string} [modelOverride] */
-  async function callGitHub(promptText, key, modelOverride) {
-    const token = key || CFG.githubKey;
-    if (!token) throw new Error('GitHub token not configured.');
-    const model = modelOverride || CFG.githubModel;
-    const body = JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: promptText }],
-      max_tokens: 2048,
-      temperature: 0.3,
-    });
-    let r;
-    try {
-      r = await xhr('POST', GITHUB_ENDPOINT, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body,
-      });
-    } catch (e) {
-      throw new Error(`GitHub Models network error: ${/** @type {Error} */(e).message}`);
-    }
-    if (r.status === 0)   throw new Error('GitHub Models: request blocked (status 0)');
-    if (r.status === 401) throw new Error('GitHub Models: token rejected (HTTP 401) — check your PAT in ⚙ Settings');
-    if (r.status === 404) {
-      // Try fallbacks before giving up
-      const tried = new Set([model]);
-      for (const fb of GITHUB_FALLBACKS) {
-        if (tried.has(fb)) continue;
-        tried.add(fb);
-        setStatus(`Model "${model}" not found — trying "${fb}"…`, '#ffb060');
-        try { return await callGitHub(promptText, key, fb); } catch (e) {
-          if (!/** @type {Error} */(e).message.includes('not found') &&
-              !/** @type {Error} */(e).message.includes('HTTP 404')) throw e;
-        }
-      }
-      throw new Error(`GitHub Models: model "${model}" not found (HTTP 404) — update the model name in ⚙ Settings`);
-    }
-    if (r.status === 429) throw new Error(`GitHub Models: rate limit hit (HTTP 429) — ${r.responseText.slice(0, 120) || 'try again later'}`);
-    if (r.status >= 400)  throw new Error(`GitHub Models [HTTP ${r.status}] (model: ${model}): ${r.responseText.slice(0, 200) || '(empty response)'}`);
-    if (!r.responseText.trim()) throw new Error(`GitHub Models [HTTP ${r.status}]: empty response from API`);
-    let data;
-    try { data = JSON.parse(r.responseText); }
-    catch { throw new Error(`GitHub Models [HTTP ${r.status}]: malformed JSON — ${r.responseText.slice(0, 160)}`); }
-    if (data.error) throw new Error(`GitHub Models [HTTP ${r.status}]: ${data.error?.message || JSON.stringify(data.error)}`);
-    if (data.choices?.[0]?.finish_reason === 'length') {
-      console.warn('[MAG] GitHub Models response truncated (finish_reason=length) — JSON may be incomplete');
-    }
-    return data.choices?.[0]?.message?.content || '';
-  }
 
   /** @param {string} promptText */
   async function callOllama(promptText) {
@@ -1337,7 +1280,7 @@ Before naming any specific element in feedback — a function, column, heading, 
     return JSON.parse(match[0]);
   }
 
-  // callAI: Gemini → Ollama (local) → GitHub Models → HuggingFace → OpenRouter
+  // callAI: Gemini → Ollama (local) → HuggingFace → OpenRouter
   /** @param {string} prompt @param {object|null} [inlineData] */
   async function callAI(prompt, inlineData = null) {
     if (CFG.geminiKey) {
@@ -1353,38 +1296,6 @@ Before naming any specific element in feedback — a function, column, heading, 
         setStatus(`Ollama failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
-    const nowMs = Date.now();
-    // Re-enable any PATs whose rate-limit window has already passed
-    for (const [k, resetAt] of exhaustedGithubPats) { if (nowMs >= resetAt) exhaustedGithubPats.delete(k); }
-    const availablePats = CFG.githubKeys.filter((/** @type {string} */ k) => !exhaustedGithubPats.has(k));
-    if (availablePats.length) {
-      for (const pat of availablePats) {
-        try { return await callGitHub(textPrompt, pat); } catch (e) {
-          const msg = /** @type {Error} */(e).message;
-          const isRateLimit = msg.includes('429') || msg.toLowerCase().includes('rate limit');
-          if (isRateLimit) {
-            const retryMatch = msg.match(/please wait (\d+) seconds/i);
-            const retryMs = retryMatch ? parseInt(retryMatch[1]) * 1000 : 86400 * 1000;
-            exhaustedGithubPats.set(pat, Date.now() + retryMs);
-            const remaining = availablePats.filter((/** @type {string} */ k) => !exhaustedGithubPats.has(k)).length;
-            if (remaining > 0) {
-              setStatus(`PAT rate-limited — switching to next (${remaining} remaining)…`, '#ffb060');
-            }
-          } else {
-            setStatus(`GitHub Models failed: ${msg}`, '#ff6060');
-            throw new Error(`GitHub Models failed: ${msg}`);
-          }
-        }
-      }
-      const soonestReset = Math.min(...[...exhaustedGithubPats.values()]);
-      const waitMs = Math.max(0, soonestReset - Date.now());
-      const waitMin = Math.ceil(waitMs / 60000);
-      const waitStr = waitMin >= 60
-        ? `${Math.floor(waitMin / 60)}h ${waitMin % 60}min`
-        : `${waitMin} min`;
-      setStatus(`All GitHub PATs rate-limited. Try again in ~${waitStr}.`, '#ff6060');
-      throw new Error(`All GitHub PATs exhausted. Try again in ~${waitStr}.`);
-    }
     if (CFG.hfKey) {
       try { return await callHuggingFace(textPrompt); } catch (e) {
         setStatus(`HF failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying OpenRouter…`, '#ffb060');
@@ -1397,7 +1308,6 @@ Before naming any specific element in feedback — a function, column, heading, 
   // Multi-file submissions (ZIP with .py + .csv + .pdf) can be large.
   // Each file is pre-capped at 4 500 chars inside extractZip; overall cap here
   // is a final safety net so the combined prompt stays within model context.
-  // gpt-4o-mini (GitHub Models) has a 128 K input context; Gemini 1 M+.
   // The split threshold below is calibrated for HuggingFace (Llama-3.1-8B, 8 K context),
   // the most constrained provider. Gemini and gpt-4o-mini never hit it in practice.
   // Prompt overhead (rules + rubric + title/instructions) ≈ 2 500 tokens; output ≈ 2 000.
@@ -2253,18 +2163,8 @@ Check: same variable names, identical code logic, same written arguments, same p
         <div class="mag-hint">Default: gemini-2.0-flash. Fallback: gemini-1.5-flash.</div>
       </div>
       <div class="mag-field">
-        <label>GitHub PATs <em style="opacity:.6">(150 req/day each — one per line for rotation)</em></label>
-        <textarea id="mag-s-github" placeholder="ghp_firstToken&#10;ghp_secondToken&#10;ghp_thirdToken" style="height:72px;font-family:monospace;font-size:11px"></textarea>
-        <div class="mag-hint">Free: <strong>github.com</strong> → Settings → Developer settings → Personal access tokens → Fine-grained → New (no scopes needed). Add one token per line — when one hits its daily limit the next takes over automatically.</div>
-      </div>
-      <div class="mag-field">
-        <label>GitHub Models model</label>
-        <input type="text" id="mag-s-github-model" placeholder="Phi-4">
-        <div class="mag-hint">Default: Phi-4. Alternatives: gpt-4o-mini, Meta-Llama-3.1-70B-Instruct, Mistral-small. See github.com/marketplace/models</div>
-      </div>
-      <div class="mag-field">
         <label><input type="checkbox" id="mag-s-ollama"> Use Ollama (local — completely free, requires Ollama running on localhost:11434)</label>
-        <div class="mag-hint">Install: <strong>ollama.com</strong> → run <code>ollama pull phi3</code> (or any model). Tried before GitHub/HuggingFace.</div>
+        <div class="mag-hint">Install: <strong>ollama.com</strong> → run <code>ollama pull phi3</code> (or any model). Tried before HuggingFace.</div>
       </div>
       <div class="mag-field">
         <label>Ollama model</label>
@@ -2324,8 +2224,7 @@ Check: same variable names, identical code logic, same written arguments, same p
   function openSettings() {
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini')).value       = CFG.geminiKey;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value = CFG.geminiModel;
-    /** @type {HTMLInputElement} */(document.getElementById('mag-s-github')).value            = CFG.githubKey;
-    /** @type {HTMLInputElement} */(document.getElementById('mag-s-github-model')).value     = CFG.githubModel;
+
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-ollama')).checked         = CFG.ollamaEnabled;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-ollama-model')).value     = CFG.ollamaModel;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-hf')).value               = CFG.hfKey;
@@ -2588,8 +2487,7 @@ Check: same variable names, identical code logic, same written arguments, same p
   document.getElementById('mag-s-save').onclick = () => {
     set('gemini_key',   /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini')).value.trim());
     set('gemini_model', (/** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value.trim()) || GEMINI_DEFAULT);
-    set('github_key',       /** @type {HTMLInputElement} */(document.getElementById('mag-s-github')).value.trim());
-    set('github_model',     (/** @type {HTMLInputElement} */(document.getElementById('mag-s-github-model')).value.trim()) || GITHUB_DEFAULT);
+
     set('ollama_enabled',   /** @type {HTMLInputElement} */(document.getElementById('mag-s-ollama')).checked ? 'true' : 'false');
     set('ollama_model',     (/** @type {HTMLInputElement} */(document.getElementById('mag-s-ollama-model')).value.trim()) || OLLAMA_DEFAULT);
     set('hf_key',           /** @type {HTMLInputElement} */(document.getElementById('mag-s-hf')).value.trim());
@@ -3699,7 +3597,7 @@ Check: same variable names, identical code logic, same written arguments, same p
   let gradeAllActive  = false; // set true by "Grade All" — triggers auto-post and auto-advance
   let gradeNRemaining = 0;    // set to N by "Grade N" — decrements after each auto-post; stops at 0
   const isAutoGrading = () => gradeAllActive || gradeNRemaining > 0;
-  const exhaustedGithubPats = new Map(); // PAT -> reset timestamp (ms); cleared on page reload
+
   // Plagiarism cache persists across panel close/reopen AND page refreshes (same tab).
   // Keyed by assignment id param so different assignments don't bleed into each other.
   const _plagCacheKey = `mag_plag_${new URLSearchParams(location.search).get('id') || 'x'}`;
