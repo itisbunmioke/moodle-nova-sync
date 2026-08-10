@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.14
+// @version      2.5.15
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -1375,9 +1375,11 @@ Before naming any specific element in feedback — a function, column, heading, 
   // Multi-file submissions (ZIP with .py + .csv + .pdf) can be large.
   // Each file is pre-capped at 4 500 chars inside extractZip; overall cap here
   // is a final safety net so the combined prompt stays within model context.
-  // GitHub Models (gpt-4o-mini) has an 8 K total context limit (input + output).
-  // Prompt overhead (rules + rubric + title/instructions) ≈ 2 500 tokens; output ≈ 1 500.
-  // That leaves ~4 000 tokens ≈ 16 000 chars for submission content.
+  // gpt-4o-mini (GitHub Models) has a 128 K input context; Gemini 1 M+.
+  // The split threshold below is calibrated for HuggingFace (Llama-3.1-8B, 8 K context),
+  // the most constrained provider. Gemini and gpt-4o-mini never hit it in practice.
+  // Prompt overhead (rules + rubric + title/instructions) ≈ 2 500 tokens; output ≈ 2 000.
+  // That leaves ~3 500 tokens ≈ 14 000 chars for submission content within HF's 8 K window.
   // 13 000 chars gives comfortable headroom while fitting multi-file submissions better.
   const MAX_SUBMISSION_CHARS = 13000;
 
@@ -1421,8 +1423,8 @@ Before naming any specific element in feedback — a function, column, heading, 
     const sub            = truncateSubmission(submissionText);
     const combinedPrompt = buildCombinedPrompt(title, instructions, rubric, sub, CFG.instructorName, CFG.instructorStyle, submittedFiles);
 
-    // Estimate whether the combined prompt fits within the model's 8 K context.
-    // Total = prompt tokens (≈ chars / 4) + max_tokens output (1 500).
+    // Estimate whether the combined prompt fits within HuggingFace's 8 K context (the tightest provider).
+    // Total = prompt tokens (≈ chars / 4) + max_tokens output (2 000).
     // When it would exceed ~7 500 tokens, split into two focused calls:
     //   Call 1 — scoring only (drops the FEEDBACK RULES section, ~600 tokens saved)
     //   Call 2 — feedback only (drops the SCORING RULES, uses buildFeedbackPrompt)
@@ -1840,7 +1842,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     #mag-bar.collapsed .mag-title,
     #mag-bar.collapsed .mag-sep,
     #mag-bar.collapsed #mag-grade-one,
-    #mag-bar.collapsed #mag-grade-5,
+    #mag-bar.collapsed #mag-grade-n,
+    #mag-bar.collapsed #mag-grade-n-count,
     #mag-bar.collapsed #mag-grade-all,
     #mag-bar.collapsed #mag-settings-btn,
     #mag-bar.collapsed #mag-status { display: none; }
@@ -1924,6 +1927,14 @@ Check: same variable names, identical code logic, same written arguments, same p
     .mag-btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .mag-btn.primary { background: #7b2fff; border-color: #a060ff; }
     .mag-btn.primary:hover { background: #9040ff; }
+    #mag-grade-n-count {
+      width: 34px; text-align: center; background: #1a0030;
+      border: 1px solid #5a30a0; border-radius: 4px; color: #f0e8ff;
+      font-size: 12px; padding: 3px 2px; -moz-appearance: textfield;
+    }
+    #mag-grade-n-count::-webkit-inner-spin-button,
+    #mag-grade-n-count::-webkit-outer-spin-button { -webkit-appearance: none; }
+    #mag-grade-n-count:focus { outline: none; border-color: #9060d0; }
     #mag-status { margin-left: auto; font-size: 11px; opacity: 0.82; white-space: nowrap; }
 
     /* Settings overlay */
@@ -2186,7 +2197,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     <span class="mag-title">✦ Moodle AutoGrader</span>
     <span class="mag-sep">|</span>
     <button class="mag-btn primary" id="mag-grade-one">Grade submission ▸</button>
-    <button class="mag-btn" id="mag-grade-5" style="background:rgba(80,40,160,0.45);border-color:rgba(160,100,255,0.6)" title="Auto-grade and post the next 5 ungraded students">Grade 5 ▸▸</button>
+    <input type="number" id="mag-grade-n-count" min="1" max="99" value="5" title="Batch size">
+    <button class="mag-btn" id="mag-grade-n" style="background:rgba(80,40,160,0.45);border-color:rgba(160,100,255,0.6)" title="Auto-grade and post the next N ungraded students">Grade N ▸▸</button>
     <button class="mag-btn" id="mag-grade-all" style="background:rgba(180,80,20,0.35);border-color:rgba(255,150,60,0.5)" title="Auto-grade and post every student in sequence">Grade All ▸▸</button>
     <span class="mag-sep">|</span>
     <button class="mag-btn" id="mag-settings-btn">⚙ Settings</button>
@@ -3690,9 +3702,18 @@ Check: same variable names, identical code logic, same written arguments, same p
     }
   };
 
-  /** @type {HTMLElement} */(document.getElementById('mag-grade-5')).onclick = () => {
-    if (reviewOverlay.classList.contains('open')) return; // already open
-    gradeNRemaining = 5;
+  const gradeNCountEl = /** @type {HTMLInputElement} */(document.getElementById('mag-grade-n-count'));
+  const gradeNBtn     = /** @type {HTMLElement} */(document.getElementById('mag-grade-n'));
+  const syncGradeNLabel = () => {
+    const n = Math.max(1, parseInt(gradeNCountEl.value) || 5);
+    gradeNBtn.textContent = `Grade ${n} ▸▸`;
+  };
+  syncGradeNLabel();
+  gradeNCountEl.addEventListener('input', syncGradeNLabel);
+  gradeNBtn.onclick = () => {
+    if (reviewOverlay.classList.contains('open')) return;
+    const n = Math.max(1, parseInt(gradeNCountEl.value) || 5);
+    gradeNRemaining = n;
     runGradeOne().catch(e => { gradeNRemaining = 0; setStatus('⚠ ' + e.message, '#ff9060'); });
   };
 
