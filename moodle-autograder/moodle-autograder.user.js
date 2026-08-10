@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.18
+// @version      2.5.19
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1280,7 +1280,8 @@ Before naming any specific element in feedback — a function, column, heading, 
     return JSON.parse(match[0]);
   }
 
-  // callAI: Gemini → Ollama (local) → HuggingFace → OpenRouter
+  // callAI: Gemini → OpenRouter → Ollama (local) → HuggingFace
+  // Order reflects quality / context-window for academic rubric grading.
   /** @param {string} prompt @param {object|null} [inlineData] */
   async function callAI(prompt, inlineData = null) {
     if (CFG.geminiKey) {
@@ -1291,17 +1292,20 @@ Before naming any specific element in feedback — a function, column, heading, 
     const textPrompt = inlineData
       ? prompt.replace('[No text submission', '[PDF submitted — text unavailable; [No text submission')
       : prompt;
+    if (CFG.openrouterKey) {
+      try { return await callOpenRouter(textPrompt); } catch (e) {
+        setStatus(`OpenRouter failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying next…`, '#ffb060');
+      }
+    }
     if (CFG.ollamaEnabled) {
       try { return await callOllama(textPrompt); } catch (e) {
         setStatus(`Ollama failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     if (CFG.hfKey) {
-      try { return await callHuggingFace(textPrompt); } catch (e) {
-        setStatus(`HF failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying OpenRouter…`, '#ffb060');
-      }
+      return callHuggingFace(textPrompt);
     }
-    return callOpenRouter(textPrompt);
+    throw new Error('No AI provider configured — add a Gemini or OpenRouter key in ⚙ Settings.');
   }
 
   /** @param {string} title @param {string} instructions @param {object[]} rubric @param {string} submissionText @param {object|null} inlineData */
@@ -2153,43 +2157,43 @@ Check: same variable names, identical code logic, same written arguments, same p
     <div id="mag-settings-box">
       <h2>⚙ Moodle AutoGrader Settings</h2>
       <div class="mag-field">
-        <label>Gemini API Key <em style="opacity:.6">(preferred — free, supports PDFs)</em></label>
+        <label>Gemini API Key ⭐ <em style="opacity:.6">(recommended — free, large context, reads PDFs natively)</em></label>
         <input type="password" id="mag-s-gemini" placeholder="AIza...">
-        <div class="mag-hint">Free key: <strong>aistudio.google.com</strong> → Get API key (new Google account, no billing).</div>
+        <div class="mag-hint">Free key: <strong>aistudio.google.com</strong> → Get API key. No billing required.</div>
       </div>
       <div class="mag-field">
         <label>Gemini model</label>
         <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.0-flash">
-        <div class="mag-hint">Default: gemini-2.0-flash. Fallback: gemini-1.5-flash.</div>
+        <div class="mag-hint">Default: gemini-2.0-flash. Alternatives: gemini-1.5-flash, gemini-2.5-flash.</div>
       </div>
       <div class="mag-field">
-        <label><input type="checkbox" id="mag-s-ollama"> Use Ollama (local — completely free, requires Ollama running on localhost:11434)</label>
-        <div class="mag-hint">Install: <strong>ollama.com</strong> → run <code>ollama pull phi3</code> (or any model). Tried before HuggingFace.</div>
+        <label>OpenRouter API Key <em style="opacity:.6">(2nd — free tier, DeepSeek / Llama 70B quality)</em></label>
+        <input type="password" id="mag-s-openrouter" placeholder="sk-or-...">
+        <div class="mag-hint">Free key: <strong>openrouter.ai</strong> → Sign up → API Keys. Auto-selects the best available free model.</div>
+      </div>
+      <div class="mag-field">
+        <label>OpenRouter model</label>
+        <input type="text" id="mag-s-openrouter-model" placeholder="deepseek/deepseek-chat-v3-0324:free">
+        <div class="mag-hint">Leave blank to auto-detect the best free model. Browse: openrouter.ai/models?max_price=0</div>
+      </div>
+      <div class="mag-field">
+        <label><input type="checkbox" id="mag-s-ollama"> Use Ollama (3rd — local &amp; offline, free, requires Ollama on localhost:11434)</label>
+        <div class="mag-hint">Install: <strong>ollama.com</strong> → run <code>ollama pull phi4</code> (or any model).</div>
       </div>
       <div class="mag-field">
         <label>Ollama model</label>
-        <input type="text" id="mag-s-ollama-model" placeholder="phi3">
-        <div class="mag-hint">Default: phi3. Other options: llama3, mistral, qwen2. Run <code>ollama list</code> to see installed models.</div>
+        <input type="text" id="mag-s-ollama-model" placeholder="phi4">
+        <div class="mag-hint">Default: phi3. Recommended: phi4, llama3.1, qwen2.5. Run <code>ollama list</code> to see installed models.</div>
       </div>
       <div class="mag-field">
-        <label>HuggingFace Token <em style="opacity:.6">(fallback — free, text-only)</em></label>
+        <label>HuggingFace Token <em style="opacity:.6">(last resort — free, text-only, 8K context limit)</em></label>
         <input type="password" id="mag-s-hf" placeholder="hf_...">
-        <div class="mag-hint">Free token: <strong>huggingface.co</strong> → Settings → Access Tokens → New token (Read). Used if Gemini key is blank.</div>
+        <div class="mag-hint">Free token: <strong>huggingface.co</strong> → Settings → Access Tokens → New token (Read).</div>
       </div>
       <div class="mag-field">
         <label>HuggingFace model</label>
         <input type="text" id="mag-s-hf-model" placeholder="meta-llama/Llama-3.1-8B-Instruct">
         <div class="mag-hint">Default: meta-llama/Llama-3.1-8B-Instruct. Larger: Qwen/Qwen2.5-72B-Instruct (may require PRO).</div>
-      </div>
-      <div class="mag-field">
-        <label>OpenRouter API Key <em style="opacity:.6">(last resort fallback)</em></label>
-        <input type="password" id="mag-s-openrouter" placeholder="sk-or-...">
-        <div class="mag-hint">Free key: <strong>openrouter.ai</strong> → Sign up → API Keys. Auto-selects a free model.</div>
-      </div>
-      <div class="mag-field">
-        <label>OpenRouter model</label>
-        <input type="text" id="mag-s-openrouter-model" placeholder="deepseek/deepseek-chat-v3-0324:free">
-        <div class="mag-hint">Leave blank to auto-detect a free model. See openrouter.ai/models?max_price=0</div>
       </div>
       <div class="mag-field">
         <label>Claude API Key <em style="opacity:.6">(optional — for higher-quality feedback)</em></label>
