@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.16
+// @version      2.5.17
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -34,7 +34,10 @@
   const CLAUDE_MODEL         = 'claude-haiku-4-5-20251001';
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
   const HF_DEFAULT           = 'meta-llama/Llama-3.1-8B-Instruct';
-  const GITHUB_DEFAULT       = 'gpt-4o-mini';
+  const GITHUB_DEFAULT       = 'openai/gpt-4o-mini';
+  // Fallback chain tried in order when the configured model returns 404.
+  // Names match the GitHub Models marketplace API IDs (provider/model format).
+  const GITHUB_FALLBACKS     = ['gpt-4o-mini', 'openai/gpt-4o', 'gpt-4o'];
   const OLLAMA_DEFAULT       = 'phi3';
   const GEMINI_DEFAULT       = 'gemini-2.0-flash';
 
@@ -1250,14 +1253,15 @@ Before naming any specific element in feedback — a function, column, heading, 
     return data.content?.[0]?.text || '';
   }
 
-  /** @param {string} promptText @param {string} [key] */
-  async function callGitHub(promptText, key) {
+  /** @param {string} promptText @param {string} [key] @param {string} [modelOverride] */
+  async function callGitHub(promptText, key, modelOverride) {
     const token = key || CFG.githubKey;
     if (!token) throw new Error('GitHub token not configured.');
+    const model = modelOverride || CFG.githubModel;
     const body = JSON.stringify({
-      model: CFG.githubModel,
+      model,
       messages: [{ role: 'user', content: promptText }],
-      max_tokens: 2048,  // raised from 1500 — truncated JSON was the "Unexpected end" error
+      max_tokens: 2048,
       temperature: 0.3,
     });
     let r;
@@ -1273,10 +1277,23 @@ Before naming any specific element in feedback — a function, column, heading, 
       throw new Error(`GitHub Models network error: ${/** @type {Error} */(e).message}`);
     }
     if (r.status === 0)   throw new Error('GitHub Models: request blocked (status 0)');
-    if (r.status === 401) throw new Error(`GitHub Models: token rejected (HTTP 401) — check your PAT in ⚙ Settings`);
-    if (r.status === 404) throw new Error(`GitHub Models: model "${CFG.githubModel}" not found (HTTP 404) — check the model name in ⚙ Settings`);
+    if (r.status === 401) throw new Error('GitHub Models: token rejected (HTTP 401) — check your PAT in ⚙ Settings');
+    if (r.status === 404) {
+      // Try fallbacks before giving up
+      const tried = new Set([model]);
+      for (const fb of GITHUB_FALLBACKS) {
+        if (tried.has(fb)) continue;
+        tried.add(fb);
+        setStatus(`Model "${model}" not found — trying "${fb}"…`, '#ffb060');
+        try { return await callGitHub(promptText, key, fb); } catch (e) {
+          if (!/** @type {Error} */(e).message.includes('not found') &&
+              !/** @type {Error} */(e).message.includes('HTTP 404')) throw e;
+        }
+      }
+      throw new Error(`GitHub Models: model "${model}" not found (HTTP 404) — update the model name in ⚙ Settings`);
+    }
     if (r.status === 429) throw new Error(`GitHub Models: rate limit hit (HTTP 429) — ${r.responseText.slice(0, 120) || 'try again later'}`);
-    if (r.status >= 400) throw new Error(`GitHub Models [HTTP ${r.status}] (model: ${CFG.githubModel}): ${r.responseText.slice(0, 200) || '(empty response)'}`);
+    if (r.status >= 400)  throw new Error(`GitHub Models [HTTP ${r.status}] (model: ${model}): ${r.responseText.slice(0, 200) || '(empty response)'}`);
     if (!r.responseText.trim()) throw new Error(`GitHub Models [HTTP ${r.status}]: empty response from API`);
     let data;
     try { data = JSON.parse(r.responseText); }
