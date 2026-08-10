@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.13
+// @version      2.5.14
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @match        *://students.willisonline.ca/mod/assign/*
@@ -1255,7 +1255,7 @@ Before naming any specific element in feedback — a function, column, heading, 
     const body = JSON.stringify({
       model: CFG.githubModel,
       messages: [{ role: 'user', content: promptText }],
-      max_tokens: 1500,
+      max_tokens: 2048,  // raised from 1500 — truncated JSON was the "Unexpected end" error
       temperature: 0.3,
     });
     let r;
@@ -1271,9 +1271,15 @@ Before naming any specific element in feedback — a function, column, heading, 
       throw new Error(`GitHub Models network error: ${/** @type {Error} */(e).message}`);
     }
     if (r.status === 0) throw new Error('GitHub Models: request blocked (status 0)');
-    const data = JSON.parse(r.responseText);
-    if (data.error) throw new Error(`GitHub Models [HTTP ${r.status}]: ${data.error?.message || JSON.stringify(data.error)}`);
     if (r.status >= 400) throw new Error(`GitHub Models [HTTP ${r.status}]: ${r.responseText.slice(0, 200)}`);
+    if (!r.responseText.trim()) throw new Error(`GitHub Models [HTTP ${r.status}]: empty response from API`);
+    let data;
+    try { data = JSON.parse(r.responseText); }
+    catch { throw new Error(`GitHub Models [HTTP ${r.status}]: malformed JSON — ${r.responseText.slice(0, 160)}`); }
+    if (data.error) throw new Error(`GitHub Models [HTTP ${r.status}]: ${data.error?.message || JSON.stringify(data.error)}`);
+    if (data.choices?.[0]?.finish_reason === 'length') {
+      console.warn('[MAG] GitHub Models response truncated (finish_reason=length) — JSON may be incomplete');
+    }
     return data.choices?.[0]?.message?.content || '';
   }
 
