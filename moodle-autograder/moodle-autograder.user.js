@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.20
+// @version      2.5.21
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1200,13 +1200,13 @@ Before naming any specific element in feedback — a function, column, heading, 
       'X-Title':       'Moodle AutoGrader',
     };
 
-    // Start with configured model, fall back through free list on 404/429
+    // Start with configured model, fall back through free list on 404/429/503
     const tried = new Set();
     let model = CFG.openrouterModel || OPENROUTER_DEFAULT;
 
-    while (tried.size < 6) {
+    while (tried.size < 10) {
       tried.add(model);
-      // One retry on 429 before moving to the next model
+      let skipToNext = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
         const body = JSON.stringify({
           model, messages: [{ role: 'user', content: promptText }],
@@ -1214,16 +1214,26 @@ Before naming any specific element in feedback — a function, column, heading, 
         });
         const r = await xhr('POST', OPENROUTER_ENDPOINT, { headers, body });
         if (r.status === 0) throw new Error('OpenRouter: request blocked (status 0) — check @connect permission');
-        if (r.status === 429 && attempt === 1) {
+        // 429 (rate-limit) or 503 (overloaded): retry once then move on
+        if ((r.status === 429 || r.status === 503) && attempt === 1) {
           setStatus(`${model.split('/').pop()} busy — retry…`, '#ffb060');
           await sleep(5000);
           continue;
         }
-        if (r.status === 429 || r.status === 404) break; // move to next model
+        if (r.status === 429 || r.status === 503 || r.status === 404) { skipToNext = true; break; }
+        if (!r.responseText) { skipToNext = true; break; }
         const data = JSON.parse(r.responseText);
-        if (data.error) throw new Error(`OpenRouter [HTTP ${r.status}]: ${data.error.message}`);
-        return data.choices?.[0]?.message?.content || '';
+        if (data.error) {
+          const msg = typeof data.error === 'string' ? data.error : (data.error.message || String(data.error));
+          // Capacity/availability errors from a specific model → try the next one
+          if (/no endpoint|overload|unavailable|busy|capacity|quota/i.test(msg)) { skipToNext = true; break; }
+          throw new Error(`OpenRouter [HTTP ${r.status}]: ${msg}`);
+        }
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) { skipToNext = true; break; }
+        return content;
       }
+      if (!skipToNext) break;
       // Current model failed — pick next untried free model
       const list = await loadFreeModelList(key);
       const next = list.find(m => !tried.has(m));
