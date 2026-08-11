@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.22
+// @version      2.5.23
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1124,10 +1124,19 @@ Before naming any specific element in feedback — a function, column, heading, 
       body,
     });
     if (r.status === 0) throw new Error('Gemini: network error or request blocked');
-    if (r.status === 429 && _retry) {
-      setStatus('Gemini rate-limited — waiting 30 s before retry…', '#ffb060');
-      await new Promise(res => setTimeout(res, 30000));
-      return callGemini(promptText, inlineData, false);
+    if (r.status === 429) {
+      const errMsg = (() => { try { return JSON.parse(r.responseText)?.error?.message || ''; } catch { return ''; } })();
+      // Daily/monthly quota exhausted — retrying won't help; cascade immediately
+      if (/quota|exhausted|billing|plan/i.test(errMsg)) {
+        throw new Error(`Gemini [429 quota exhausted]: ${errMsg}`);
+      }
+      // Short-term RPM rate limit — wait and retry once
+      if (_retry) {
+        setStatus('Gemini rate-limited — waiting 30 s before retry…', '#ffb060');
+        await new Promise(res => setTimeout(res, 30000));
+        return callGemini(promptText, inlineData, false);
+      }
+      throw new Error(`Gemini [429]: ${errMsg || 'rate-limited'}`);
     }
     if (r.status >= 500 && _retry) {
       await new Promise(res => setTimeout(res, 1500));
@@ -1307,10 +1316,11 @@ Before naming any specific element in feedback — a function, column, heading, 
   // Order reflects quality / context-window for academic rubric grading.
   /** @param {string} prompt @param {object|null} [inlineData] */
   async function callAI(prompt, inlineData = null) {
-    let lastErr = /** @type {Error|null} */(null);
+    let geminiErr = /** @type {Error|null} */(null);
+    let lastErr   = /** @type {Error|null} */(null);
     if (CFG.geminiKey) {
       try { return await callGemini(prompt, inlineData); } catch (e) {
-        lastErr = /** @type {Error} */(e);
+        geminiErr = lastErr = /** @type {Error} */(e);
         setStatus(`Gemini failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
@@ -1332,8 +1342,13 @@ Before naming any specific element in feedback — a function, column, heading, 
     if (CFG.hfKey) {
       return callHuggingFace(textPrompt);
     }
-    // If any provider was attempted, re-throw the real error instead of a misleading config message
-    if (lastErr) throw lastErr;
+    if (lastErr) {
+      // When a cascade happened, append the Gemini error so the user sees why their primary provider failed
+      if (geminiErr && lastErr !== geminiErr) {
+        throw new Error(`${lastErr.message} — Gemini: ${geminiErr.message.slice(0, 120)}`);
+      }
+      throw lastErr;
+    }
     throw new Error('No AI provider configured — add a Gemini or OpenRouter key in ⚙ Settings.');
   }
 
