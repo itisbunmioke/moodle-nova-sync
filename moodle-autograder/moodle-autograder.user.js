@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.23
+// @version      2.5.24
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -35,7 +35,7 @@
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
   const HF_DEFAULT           = 'meta-llama/Llama-3.1-8B-Instruct';
   const OLLAMA_DEFAULT       = 'phi3';
-  const GEMINI_DEFAULT       = 'gemini-2.0-flash';
+  const GEMINI_DEFAULT       = 'gemini-2.5-flash';
 
   // ── Settings ─────────────────────────────────────────────────────────────
   const get = (k, d = '') => { const v = GM_getValue('mag_' + k); return v !== undefined ? v : d; };
@@ -1111,19 +1111,31 @@ Before naming any specific element in feedback — a function, column, heading, 
   }
 
   // ── AI callers ───────────────────────────────────────────────────────────
-  /** @param {string} promptText @param {object|null} [inlineData] @param {boolean} [_retry] */
-  async function callGemini(promptText, inlineData = null, _retry = true) {
+  /** @param {string} promptText @param {object|null} [inlineData] @param {boolean} [_retry] @param {string|null} [_model] */
+  async function callGemini(promptText, inlineData = null, _retry = true, _model = null) {
     const key = CFG.geminiKey;
     if (!key) throw new Error('Gemini API key not configured.');
+    const model = _model || CFG.geminiModel;
     /** @type {object[]} */
     const parts = [{ text: promptText }];
     if (inlineData) parts.push({ inlineData });
     const body = JSON.stringify({ contents: [{ parts }] });
-    const r = await xhr('POST', GEMINI_ENDPOINT(key, CFG.geminiModel), {
+    const r = await xhr('POST', GEMINI_ENDPOINT(key, model), {
       headers: { 'Content-Type': 'application/json' },
       body,
     });
     if (r.status === 0) throw new Error('Gemini: network error or request blocked');
+    if (r.status === 404) {
+      // Model retired — walk the fallback list before giving up
+      const fallbacks = ['gemini-2.5-flash', 'gemini-1.5-flash'];
+      const next = _retry ? fallbacks.find(m => m !== model) : null;
+      if (next) {
+        setStatus(`Gemini model "${model}" retired — switching to ${next}…`, '#ffb060');
+        return callGemini(promptText, inlineData, false, next);
+      }
+      const errMsg = (() => { try { return JSON.parse(r.responseText)?.error?.message || ''; } catch { return ''; } })();
+      throw new Error(`Gemini [404]: ${errMsg || `model "${model}" not found`} — update model in ⚙ Settings`);
+    }
     if (r.status === 429) {
       const errMsg = (() => { try { return JSON.parse(r.responseText)?.error?.message || ''; } catch { return ''; } })();
       // Daily/monthly quota exhausted — retrying won't help; cascade immediately
@@ -1134,13 +1146,13 @@ Before naming any specific element in feedback — a function, column, heading, 
       if (_retry) {
         setStatus('Gemini rate-limited — waiting 30 s before retry…', '#ffb060');
         await new Promise(res => setTimeout(res, 30000));
-        return callGemini(promptText, inlineData, false);
+        return callGemini(promptText, inlineData, false, _model);
       }
       throw new Error(`Gemini [429]: ${errMsg || 'rate-limited'}`);
     }
     if (r.status >= 500 && _retry) {
       await new Promise(res => setTimeout(res, 1500));
-      return callGemini(promptText, inlineData, false);
+      return callGemini(promptText, inlineData, false, _model);
     }
     if (!r.responseText) throw new Error(`Gemini: empty response (HTTP ${r.status})`);
     const data = JSON.parse(r.responseText);
@@ -2207,8 +2219,8 @@ Check: same variable names, identical code logic, same written arguments, same p
       </div>
       <div class="mag-field">
         <label>Gemini model</label>
-        <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.0-flash">
-        <div class="mag-hint">Default: gemini-2.0-flash. Alternatives: gemini-1.5-flash, gemini-2.5-flash.</div>
+        <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.5-flash">
+        <div class="mag-hint">Default: gemini-2.5-flash. Fallback: gemini-1.5-flash. (gemini-2.0-flash was retired — clear this field to reset to the default.)</div>
       </div>
       <div class="mag-field">
         <label>OpenRouter API Key <em style="opacity:.6">(2nd — free tier, DeepSeek / Llama 70B quality)</em></label>
