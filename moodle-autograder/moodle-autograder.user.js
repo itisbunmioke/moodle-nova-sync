@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.24
+// @version      2.5.25
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -35,7 +35,7 @@
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
   const HF_DEFAULT           = 'meta-llama/Llama-3.1-8B-Instruct';
   const OLLAMA_DEFAULT       = 'phi3';
-  const GEMINI_DEFAULT       = 'gemini-2.5-flash';
+  const GEMINI_DEFAULT       = 'gemini-3.6-flash';
 
   // ── Settings ─────────────────────────────────────────────────────────────
   const get = (k, d = '') => { const v = GM_getValue('mag_' + k); return v !== undefined ? v : d; };
@@ -1127,7 +1127,7 @@ Before naming any specific element in feedback — a function, column, heading, 
     if (r.status === 0) throw new Error('Gemini: network error or request blocked');
     if (r.status === 404) {
       // Model retired — walk the fallback list before giving up
-      const fallbacks = ['gemini-2.5-flash', 'gemini-1.5-flash'];
+      const fallbacks = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
       const next = _retry ? fallbacks.find(m => m !== model) : null;
       if (next) {
         setStatus(`Gemini model "${model}" retired — switching to ${next}…`, '#ffb060');
@@ -2219,8 +2219,8 @@ Check: same variable names, identical code logic, same written arguments, same p
       </div>
       <div class="mag-field">
         <label>Gemini model</label>
-        <input type="text" id="mag-s-gemini-model" placeholder="gemini-2.5-flash">
-        <div class="mag-hint">Default: gemini-2.5-flash. Fallback: gemini-1.5-flash. (gemini-2.0-flash was retired — clear this field to reset to the default.)</div>
+        <input type="text" id="mag-s-gemini-model" placeholder="gemini-3.6-flash">
+        <div class="mag-hint">Default: gemini-3.6-flash (Google's recommended replacement for 2.0-flash). Also available: gemini-3.5-flash, gemini-2.5-flash. Clear field to reset to default.</div>
       </div>
       <div class="mag-field">
         <label>OpenRouter API Key <em style="opacity:.6">(2nd — free tier, DeepSeek / Llama 70B quality)</em></label>
