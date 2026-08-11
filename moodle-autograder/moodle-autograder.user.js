@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.19
+// @version      2.5.20
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1111,8 +1111,8 @@ Before naming any specific element in feedback — a function, column, heading, 
   }
 
   // ── AI callers ───────────────────────────────────────────────────────────
-  /** @param {string} promptText @param {object|null} [inlineData] */
-  async function callGemini(promptText, inlineData = null) {
+  /** @param {string} promptText @param {object|null} [inlineData] @param {boolean} [_retry] */
+  async function callGemini(promptText, inlineData = null, _retry = true) {
     const key = CFG.geminiKey;
     if (!key) throw new Error('Gemini API key not configured.');
     /** @type {object[]} */
@@ -1123,9 +1123,17 @@ Before naming any specific element in feedback — a function, column, heading, 
       headers: { 'Content-Type': 'application/json' },
       body,
     });
+    if (r.status === 0) throw new Error('Gemini: network error or request blocked');
+    if (r.status >= 500 && _retry) {
+      await new Promise(res => setTimeout(res, 1500));
+      return callGemini(promptText, inlineData, false);
+    }
+    if (!r.responseText) throw new Error(`Gemini: empty response (HTTP ${r.status})`);
     const data = JSON.parse(r.responseText);
-    if (data.error) throw new Error(`Gemini error: ${data.error.message}`);
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (data.error) throw new Error(`Gemini [${r.status}]: ${data.error.message}`);
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('Gemini: empty response body — may have been blocked by safety filters');
+    return text;
   }
 
   /** @param {string} promptText */
@@ -1284,9 +1292,11 @@ Before naming any specific element in feedback — a function, column, heading, 
   // Order reflects quality / context-window for academic rubric grading.
   /** @param {string} prompt @param {object|null} [inlineData] */
   async function callAI(prompt, inlineData = null) {
+    let lastErr = /** @type {Error|null} */(null);
     if (CFG.geminiKey) {
       try { return await callGemini(prompt, inlineData); } catch (e) {
-        setStatus(`Gemini failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying next…`, '#ffb060');
+        lastErr = /** @type {Error} */(e);
+        setStatus(`Gemini failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     const textPrompt = inlineData
@@ -1294,17 +1304,21 @@ Before naming any specific element in feedback — a function, column, heading, 
       : prompt;
     if (CFG.openrouterKey) {
       try { return await callOpenRouter(textPrompt); } catch (e) {
-        setStatus(`OpenRouter failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying next…`, '#ffb060');
+        lastErr = /** @type {Error} */(e);
+        setStatus(`OpenRouter failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     if (CFG.ollamaEnabled) {
       try { return await callOllama(textPrompt); } catch (e) {
-        setStatus(`Ollama failed (${/** @type {Error} */(e).message.slice(0, 60)}) — trying next…`, '#ffb060');
+        lastErr = /** @type {Error} */(e);
+        setStatus(`Ollama failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     if (CFG.hfKey) {
       return callHuggingFace(textPrompt);
     }
+    // If any provider was attempted, re-throw the real error instead of a misleading config message
+    if (lastErr) throw lastErr;
     throw new Error('No AI provider configured — add a Gemini or OpenRouter key in ⚙ Settings.');
   }
 
