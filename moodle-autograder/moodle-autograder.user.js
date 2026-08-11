@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.21
+// @version      2.5.22
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1124,6 +1124,11 @@ Before naming any specific element in feedback — a function, column, heading, 
       body,
     });
     if (r.status === 0) throw new Error('Gemini: network error or request blocked');
+    if (r.status === 429 && _retry) {
+      setStatus('Gemini rate-limited — waiting 30 s before retry…', '#ffb060');
+      await new Promise(res => setTimeout(res, 30000));
+      return callGemini(promptText, inlineData, false);
+    }
     if (r.status >= 500 && _retry) {
       await new Promise(res => setTimeout(res, 1500));
       return callGemini(promptText, inlineData, false);
