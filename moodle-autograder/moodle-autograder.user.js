@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.25
+// @version      2.5.26
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -32,6 +32,8 @@
   const OLLAMA_ENDPOINT      = 'http://localhost:11434/v1/chat/completions';
   const CLAUDE_ENDPOINT      = 'https://api.anthropic.com/v1/messages';
   const CLAUDE_MODEL         = 'claude-haiku-4-5-20251001';
+  const GROQ_ENDPOINT        = 'https://api.groq.com/openai/v1/chat/completions';
+  const GROQ_DEFAULT         = 'llama-3.3-70b-versatile';
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
   const HF_DEFAULT           = 'meta-llama/Llama-3.1-8B-Instruct';
   const OLLAMA_DEFAULT       = 'phi3';
@@ -42,8 +44,11 @@
   const set = (k, v)      => GM_setValue('mag_' + k, v);
 
   const CFG = {
-    get geminiKey()           { return get('gemini_key'); },
+    get geminiKeys()          { return get('gemini_key').split(',').map(k => k.trim()).filter(Boolean); },
+    get geminiKey()           { return CFG.geminiKeys.find(k => !exhaustedGeminiKeys.has(k)) || ''; },
     get geminiModel()         { return get('gemini_model', GEMINI_DEFAULT); },
+    get groqKey()             { return get('groq_key'); },
+    get groqModel()           { return get('groq_model', GROQ_DEFAULT); },
     get openrouterKey()       { return get('openrouter_key'); },
     get openrouterModel()     { return get('openrouter_model', OPENROUTER_DEFAULT); },
     get hfKey()               { return get('hf_key'); },
@@ -1111,9 +1116,9 @@ Before naming any specific element in feedback — a function, column, heading, 
   }
 
   // ── AI callers ───────────────────────────────────────────────────────────
-  /** @param {string} promptText @param {object|null} [inlineData] @param {boolean} [_retry] @param {string|null} [_model] */
-  async function callGemini(promptText, inlineData = null, _retry = true, _model = null) {
-    const key = CFG.geminiKey;
+  /** @param {string} promptText @param {object|null} [inlineData] @param {boolean} [_retry] @param {string|null} [_model] @param {string|null} [_key] */
+  async function callGemini(promptText, inlineData = null, _retry = true, _model = null, _key = null) {
+    const key = _key || CFG.geminiKey;
     if (!key) throw new Error('Gemini API key not configured.');
     const model = _model || CFG.geminiModel;
     /** @type {object[]} */
@@ -1138,8 +1143,14 @@ Before naming any specific element in feedback — a function, column, heading, 
     }
     if (r.status === 429) {
       const errMsg = (() => { try { return JSON.parse(r.responseText)?.error?.message || ''; } catch { return ''; } })();
-      // Daily/monthly quota exhausted — retrying won't help; cascade immediately
+      // Daily/monthly quota exhausted — try next key, or cascade if none left
       if (/quota|exhausted|billing|plan/i.test(errMsg)) {
+        exhaustedGeminiKeys.add(key);
+        const nextKey = CFG.geminiKeys.find(k => !exhaustedGeminiKeys.has(k));
+        if (nextKey) {
+          setStatus('Gemini quota exhausted — switching to backup key…', '#ffb060');
+          return callGemini(promptText, inlineData, true, _model, nextKey);
+        }
         throw new Error(`Gemini [429 quota exhausted]: ${errMsg}`);
       }
       // Short-term RPM rate limit — wait and retry once
@@ -1186,6 +1197,9 @@ Before naming any specific element in feedback — a function, column, heading, 
     if (data.error) throw new Error(`HuggingFace [HTTP ${r.status}]: ${typeof data.error === 'string' ? data.error : data.error.message}`);
     return data.choices?.[0]?.message?.content || '';
   }
+
+  // Tracks Gemini keys whose daily quota is exhausted for this page session
+  const exhaustedGeminiKeys = new Set();
 
   // Session-cached ordered list of free models fetched from OpenRouter
   /** @type {string[]} */
@@ -1293,6 +1307,32 @@ Before naming any specific element in feedback — a function, column, heading, 
 
 
   /** @param {string} promptText */
+  async function callGroq(promptText) {
+    const key = CFG.groqKey;
+    if (!key) throw new Error('Groq API key not configured.');
+    const body = JSON.stringify({
+      model:       CFG.groqModel,
+      messages:    [{ role: 'user', content: promptText }],
+      max_tokens:  2048,
+      temperature: 0.3,
+    });
+    const r = await xhr('POST', GROQ_ENDPOINT, {
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body,
+    });
+    if (r.status === 0) throw new Error('Groq: request blocked (status 0)');
+    if (!r.responseText) throw new Error(`Groq: empty response (HTTP ${r.status})`);
+    const data = JSON.parse(r.responseText);
+    if (data.error) {
+      const msg = typeof data.error === 'string' ? data.error : (data.error.message || String(data.error));
+      throw new Error(`Groq [${r.status}]: ${msg}`);
+    }
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error('Groq: empty response content');
+    return content;
+  }
+
+  /** @param {string} promptText */
   async function callOllama(promptText) {
     const body = JSON.stringify({
       model: CFG.ollamaModel,
@@ -1343,6 +1383,12 @@ Before naming any specific element in feedback — a function, column, heading, 
       try { return await callOpenRouter(textPrompt); } catch (e) {
         lastErr = /** @type {Error} */(e);
         setStatus(`OpenRouter failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
+      }
+    }
+    if (CFG.groqKey) {
+      try { return await callGroq(textPrompt); } catch (e) {
+        lastErr = /** @type {Error} */(e);
+        setStatus(`Groq failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     if (CFG.ollamaEnabled) {
@@ -2213,9 +2259,10 @@ Check: same variable names, identical code logic, same written arguments, same p
     <div id="mag-settings-box">
       <h2>⚙ Moodle AutoGrader Settings</h2>
       <div class="mag-field">
-        <label>Gemini API Key ⭐ <em style="opacity:.6">(recommended — free, large context, reads PDFs natively)</em></label>
-        <input type="password" id="mag-s-gemini" placeholder="AIza...">
-        <div class="mag-hint">Free key: <strong>aistudio.google.com</strong> → Get API key. No billing required.</div>
+        <label>Gemini API Key(s) ⭐ <em style="opacity:.6">(recommended — free, large context, reads PDFs natively)</em></label>
+        <input type="text" id="mag-s-gemini" placeholder="AIza..." style="font-family:monospace;font-size:0.85em">
+        <div class="mag-hint">Free key: <strong>aistudio.google.com</strong> → Get API key. No billing required.<br>
+        <strong>Beat daily quota:</strong> paste multiple keys separated by commas — backup keys activate automatically when the active one is quota-exhausted.</div>
       </div>
       <div class="mag-field">
         <label>Gemini model</label>
@@ -2233,7 +2280,17 @@ Check: same variable names, identical code logic, same written arguments, same p
         <div class="mag-hint">Leave blank to auto-detect the best free model. Browse: openrouter.ai/models?max_price=0</div>
       </div>
       <div class="mag-field">
-        <label><input type="checkbox" id="mag-s-ollama"> Use Ollama (3rd — local &amp; offline, free, requires Ollama on localhost:11434)</label>
+        <label>Groq API Key <em style="opacity:.6">(3rd — free tier, ~1K req/day, Llama 70B, very fast)</em></label>
+        <input type="password" id="mag-s-groq" placeholder="gsk_...">
+        <div class="mag-hint">Free key: <strong>console.groq.com</strong> → Sign up → API Keys. No credit card required.</div>
+      </div>
+      <div class="mag-field">
+        <label>Groq model</label>
+        <input type="text" id="mag-s-groq-model" placeholder="llama-3.3-70b-versatile">
+        <div class="mag-hint">Default: llama-3.3-70b-versatile. Also available: llama-4-scout, kimi-k2. Text-only — no PDFs.</div>
+      </div>
+      <div class="mag-field">
+        <label><input type="checkbox" id="mag-s-ollama"> Use Ollama (4th — local &amp; offline, free, requires Ollama on localhost:11434)</label>
         <div class="mag-hint">Install: <strong>ollama.com</strong> → run <code>ollama pull phi4</code> (or any model).</div>
       </div>
       <div class="mag-field">
@@ -2291,6 +2348,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-hf-model')).value         = CFG.hfModel;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter')).value       = CFG.openrouterKey;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter-model')).value = CFG.openrouterModel;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value             = CFG.groqKey;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value       = CFG.groqModel;
     document.getElementById('mag-s-claude').value       = CFG.claudeKey;
     document.getElementById('mag-s-use-claude').checked = CFG.useClaudeForFeedback;
     document.getElementById('mag-s-name').value     = CFG.instructorName;
@@ -2554,6 +2613,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     set('hf_model',         (/** @type {HTMLInputElement} */(document.getElementById('mag-s-hf-model')).value.trim()) || HF_DEFAULT);
     set('openrouter_key',   /** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter')).value.trim());
     set('openrouter_model', (/** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter-model')).value.trim()) || OPENROUTER_DEFAULT);
+    set('groq_key',         /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value.trim());
+    set('groq_model',       (/** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value.trim()) || GROQ_DEFAULT);
     set('claude_key',      document.getElementById('mag-s-claude').value.trim());
     set('claude_feedback', document.getElementById('mag-s-use-claude').checked ? 'true' : 'false');
     set('instructor_name', document.getElementById('mag-s-name').value.trim() || 'Instructor');
