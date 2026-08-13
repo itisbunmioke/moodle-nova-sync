@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.32
+// @version      2.5.33
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1418,6 +1418,9 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       /(?:no specific|a specific|verifiable) (?:technical )?observation/i,
     ];
     if (metaSignals.filter(p => p.test(text)).length >= 2) return '';
+    // 4. Strip em dashes (U+2014) and en dashes (U+2013) — strong AI hallmark.
+    //    Replace with a semicolon so surrounding clauses stay grammatically joined.
+    text = text.replace(/\s*[–—]\s*/g, '; ').replace(/;\s*$/, '').trim();
     return text;
   }
 
