@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.31
+// @version      2.5.32
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2425,7 +2425,7 @@ Check: same variable names, identical code logic, same written arguments, same p
   document.body.appendChild(settingsOverlay);
 
   function openSettings() {
-    /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini')).value       = CFG.geminiKey;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini')).value       = CFG.geminiKeys.join(', ');
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-gemini-model')).value = CFG.geminiModel;
 
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-ollama')).checked         = CFG.ollamaEnabled;
