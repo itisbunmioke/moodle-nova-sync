@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.27
+// @version      2.5.28
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1112,7 +1112,10 @@ Before naming any specific element in feedback — a function, column, heading, 
 - No opener type should dominate. Valid openers include — and none of these has priority over the others: a named element from the work (function name, column, chart, slide, dataset), a second-person pronoun ("You"/"Your"), an article ("The"/"A"), a verb or gerund ("Missing", "Got", "Needs", "Working", "Looks like"), a conjunction ("But", "So", "And", "Though"), a rhetorical question ("Why is...?"), a short fragment. Pick the one that sounds most natural for this specific submission. The only rule: if you notice yourself defaulting to any one type, switch.
 - No bullet points, headers, or markdown of any kind.
 - No sign-off or motivational closer of any kind. This means zero encouragement sentences at the end: no "Keep it up", "Good luck", "Best of luck", "Keep up the good work", "Keep that up in future projects", "Looking forward to seeing your next submission", "Hope this helps", "You're on the right track", "Great start", "Keep pushing", "You've got this", or any variant. End on the last piece of actionable feedback. Do not add a warm send-off.
-- Don't mention AI, this tool, or anything about how this comment was written.`;
+- Don't mention AI, this tool, or anything about how this comment was written.
+
+— OUTPUT —
+Your response is the feedback text itself, and nothing else. Do not explain your reasoning. Do not narrate what you are deciding or checking. Do not write about the rules, the criteria, or what you should or should not include. If you notice yourself writing anything other than the actual feedback paragraph (or an empty string ""), stop and delete it. Output ONLY the final result.`;
   }
 
   // ── AI callers ───────────────────────────────────────────────────────────
@@ -1358,18 +1361,30 @@ Before naming any specific element in feedback — a function, column, heading, 
   }
 
   // Strips chain-of-thought/reasoning preambles that some models leak into responses.
-  // Handles both XML-style <think> blocks (DeepSeek-R1) and narrated reasoning ("Here's a thinking process:").
+  // Handles: XML <think> blocks, narrated preambles, and inline process narration.
   function stripThinking(text) {
     if (!text) return text;
-    // Remove <think>…</think> or <thinking>…</thinking> blocks
+    // 1. Remove <think>…</think> or <thinking>…</thinking> blocks (DeepSeek-R1, etc.)
     text = text.replace(/<think(?:ing)?[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
-    // Detect narrated reasoning preamble ("Here's a thinking process:", "Let me think through this:", etc.)
+    // 2. Narrated reasoning preamble ("Here's a thinking process:", "Let me think through this:", etc.)
     if (/^(?:here[''`]?s?\s+(?:a\s+)?(?:my\s+)?thinking|let me\s+(?:think|reason|work\s+through)|thinking\s+(?:process|through)|## (?:thinking|reasoning))/i.test(text)) {
       const paras = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
       // Walk backwards to find the last plain-prose paragraph (no list/header markers)
       const answer = [...paras].reverse().find(p => p.length > 20 && !/^[\d\-\*#>]|^\*\*/.test(p));
       if (answer) return answer;
+      return '';
     }
+    // 3. Inline process narration — model narrating its decision without a standard preamble.
+    // Detected by 2+ signals that the text is ABOUT the grading process rather than actual feedback.
+    const metaSignals = [
+      /\bi should (?:return|output|write|give|include)/i,
+      /return (?:an )?(?:empty string|""|'')/i,
+      /the rules? (?:say|state|require|dictate|mandate)/i,
+      /(?:let me|i need to|i must|i have to) (?:think|check|determine|verify|find|look|consider|decide)/i,
+      /(?:if i|should i|do i) (?:return|write|include|add|mention|output)/i,
+      /(?:no specific|a specific|verifiable) (?:technical )?observation/i,
+    ];
+    if (metaSignals.filter(p => p.test(text)).length >= 2) return '';
     return text;
   }
 
