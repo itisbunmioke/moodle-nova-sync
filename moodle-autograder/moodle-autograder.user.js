@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.26
+// @version      2.5.27
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1218,6 +1218,7 @@ Before naming any specific element in feedback — a function, column, heading, 
         JSON.parse(r.responseText).data || []);
       const free = all
         .filter(m => m.pricing?.prompt === '0' && m.pricing?.completion === '0')
+        .filter(m => !/deepseek-r1|deepseek\/r1|qwq|thinking-model/i.test(m.id))  // exclude CoT reasoning models
         .map(m => m.id);
       const pref = ['deepseek', 'llama', 'qwen', 'mistral', 'phi', 'gemma'];
       const sorted = pref.flatMap(p => free.filter(id => id.toLowerCase().includes(p)));
@@ -1354,6 +1355,22 @@ Before naming any specific element in feedback — a function, column, heading, 
     const data = JSON.parse(r.responseText);
     if (data.error) throw new Error(`Ollama error: ${data.error}`);
     return data.choices?.[0]?.message?.content || '';
+  }
+
+  // Strips chain-of-thought/reasoning preambles that some models leak into responses.
+  // Handles both XML-style <think> blocks (DeepSeek-R1) and narrated reasoning ("Here's a thinking process:").
+  function stripThinking(text) {
+    if (!text) return text;
+    // Remove <think>…</think> or <thinking>…</thinking> blocks
+    text = text.replace(/<think(?:ing)?[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+    // Detect narrated reasoning preamble ("Here's a thinking process:", "Let me think through this:", etc.)
+    if (/^(?:here[''`]?s?\s+(?:a\s+)?(?:my\s+)?thinking|let me\s+(?:think|reason|work\s+through)|thinking\s+(?:process|through)|## (?:thinking|reasoning))/i.test(text)) {
+      const paras = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+      // Walk backwards to find the last plain-prose paragraph (no list/header markers)
+      const answer = [...paras].reverse().find(p => p.length > 20 && !/^[\d\-\*#>]|^\*\*/.test(p));
+      if (answer) return answer;
+    }
+    return text;
   }
 
   function parseGradingJSON(raw) {
@@ -1493,7 +1510,7 @@ Before naming any specific element in feedback — a function, column, heading, 
       const feedPrompt = buildFeedbackPrompt(title, instructions, rubric, sub, grading.scores, CFG.instructorName, CFG.instructorStyle);
       const splitFeedback = CFG.useClaudeForFeedback && CFG.claudeKey
         ? (await callClaude(feedPrompt)).trim()
-        : (await callAI(feedPrompt, null)).trim();
+        : stripThinking((await callAI(feedPrompt, null)).trim());
 
       return {
         scores:         grading.scores,
@@ -1514,7 +1531,7 @@ Before naming any specific element in feedback — a function, column, heading, 
     grading.totalPoints = grading.scores.reduce((/** @type {number} */ s, /** @type {any} */ sc) => s + (sc.pointsAwarded || 0), 0);
 
     const useClaude = CFG.useClaudeForFeedback && CFG.claudeKey;
-    let feedback = typeof grading.feedback === 'string' ? grading.feedback.trim() : '';
+    let feedback = typeof grading.feedback === 'string' ? stripThinking(grading.feedback.trim()) : '';
     if (useClaude) {
       const feedPrompt = buildFeedbackPrompt(title, instructions, rubric, sub, grading.scores, CFG.instructorName, CFG.instructorStyle);
       feedback = (await callClaude(feedPrompt)).trim();
