@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.29
+// @version      2.5.30
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1203,6 +1203,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
 
   // Tracks Gemini keys whose daily quota is exhausted for this page session
   const exhaustedGeminiKeys = new Set();
+  let groqNetworkBlocked = false; // true after a 403 — Groq blocks this IP/network
 
   // Session-cached ordered list of free models fetched from OpenRouter
   /** @type {string[]} */
@@ -1417,10 +1418,15 @@ Your response is the feedback text itself, and nothing else. Do not explain your
         setStatus(`OpenRouter failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
-    if (CFG.groqKey) {
+    if (CFG.groqKey && !groqNetworkBlocked) {
       try { return await callGroq(textPrompt); } catch (e) {
         lastErr = /** @type {Error} */(e);
-        setStatus(`Groq failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
+        if (/** @type {Error} */(e).message.includes('[403]')) {
+          groqNetworkBlocked = true;
+          setStatus('Groq blocked by network (403) — skipping for this session…', '#ffb060');
+        } else {
+          setStatus(`Groq failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
+        }
       }
     }
     if (CFG.ollamaEnabled) {
