@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.28
+// @version      2.5.29
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1158,8 +1158,8 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       }
       // Short-term RPM rate limit — wait and retry once
       if (_retry) {
-        setStatus('Gemini rate-limited — waiting 30 s before retry…', '#ffb060');
-        await new Promise(res => setTimeout(res, 30000));
+        setStatus('Gemini rate-limited — waiting 15 s before retry…', '#ffb060');
+        await new Promise(res => setTimeout(res, 15000));
         return callGemini(promptText, inlineData, false, _model);
       }
       throw new Error(`Gemini [429]: ${errMsg || 'rate-limited'}`);
@@ -1248,7 +1248,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     const tried = new Set();
     let model = CFG.openrouterModel || OPENROUTER_DEFAULT;
 
-    while (tried.size < 10) {
+    while (tried.size < 6) {
       tried.add(model);
       let skipToNext = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1261,7 +1261,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
         // 429 (rate-limit) or 503 (overloaded): retry once then move on
         if ((r.status === 429 || r.status === 503) && attempt === 1) {
           setStatus(`${model.split('/').pop()} busy — retry…`, '#ffb060');
-          await sleep(5000);
+          await sleep(1000);
           continue;
         }
         if (r.status === 429 || r.status === 503 || r.status === 404) { skipToNext = true; break; }
