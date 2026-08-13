@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.30
+// @version      2.5.31
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -34,6 +34,8 @@
   const CLAUDE_MODEL         = 'claude-haiku-4-5-20251001';
   const GROQ_ENDPOINT        = 'https://api.groq.com/openai/v1/chat/completions';
   const GROQ_DEFAULT         = 'llama-3.3-70b-versatile';
+  const MISTRAL_ENDPOINT     = 'https://api.mistral.ai/v1/chat/completions';
+  const MISTRAL_DEFAULT      = 'mistral-small-latest';
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
   const HF_DEFAULT           = 'meta-llama/Llama-3.1-8B-Instruct';
   const OLLAMA_DEFAULT       = 'phi3';
@@ -49,6 +51,8 @@
     get geminiModel()         { return get('gemini_model', GEMINI_DEFAULT); },
     get groqKey()             { return get('groq_key'); },
     get groqModel()           { return get('groq_model', GROQ_DEFAULT); },
+    get mistralKey()          { return get('mistral_key'); },
+    get mistralModel()        { return get('mistral_model', MISTRAL_DEFAULT); },
     get openrouterKey()       { return get('openrouter_key'); },
     get openrouterModel()     { return get('openrouter_model', OPENROUTER_DEFAULT); },
     get hfKey()               { return get('hf_key'); },
@@ -1338,6 +1342,34 @@ Your response is the feedback text itself, and nothing else. Do not explain your
   }
 
   /** @param {string} promptText */
+  async function callMistral(promptText) {
+    const key = CFG.mistralKey;
+    if (!key) throw new Error('Mistral API key not configured.');
+    const body = JSON.stringify({
+      model:       CFG.mistralModel,
+      messages:    [{ role: 'user', content: promptText }],
+      max_tokens:  2048,
+      temperature: 0.3,
+    });
+    const r = await xhr('POST', MISTRAL_ENDPOINT, {
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body,
+    });
+    if (r.status === 0) throw new Error('Mistral: network error or request blocked');
+    if (!r.responseText) throw new Error(`Mistral: empty response (HTTP ${r.status})`);
+    const data = JSON.parse(r.responseText);
+    if (data.error) {
+      const msg = typeof data.error === 'string' ? data.error : (data.error.message || String(data.error));
+      throw new Error(`Mistral [${r.status}]: ${msg}`);
+    }
+    if (r.status === 429) throw new Error(`Mistral [429]: rate-limited — free tier is ~1 req/s`);
+    if (r.status >= 400) throw new Error(`Mistral [${r.status}]: ${data.message || 'request failed'}`);
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error('Mistral: empty response content');
+    return content;
+  }
+
+  /** @param {string} promptText */
   async function callOllama(promptText) {
     const body = JSON.stringify({
       model: CFG.ollamaModel,
@@ -1416,6 +1448,12 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       try { return await callOpenRouter(textPrompt); } catch (e) {
         lastErr = /** @type {Error} */(e);
         setStatus(`OpenRouter failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
+      }
+    }
+    if (CFG.mistralKey) {
+      try { return await callMistral(textPrompt); } catch (e) {
+        lastErr = /** @type {Error} */(e);
+        setStatus(`Mistral failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     if (CFG.groqKey && !groqNetworkBlocked) {
@@ -2318,7 +2356,17 @@ Check: same variable names, identical code logic, same written arguments, same p
         <div class="mag-hint">Leave blank to auto-detect the best free model. Browse: openrouter.ai/models?max_price=0</div>
       </div>
       <div class="mag-field">
-        <label>Groq API Key <em style="opacity:.6">(3rd — free tier, ~1K req/day, Llama 70B, very fast)</em></label>
+        <label>Mistral API Key <em style="opacity:.6">(3rd — permanently free tier, ~1B tokens/mo, fast)</em></label>
+        <input type="password" id="mag-s-mistral" placeholder="...">
+        <div class="mag-hint">Free key: <strong>console.mistral.ai</strong> → Sign up → API Keys. No credit card required. Text-only.</div>
+      </div>
+      <div class="mag-field">
+        <label>Mistral model</label>
+        <input type="text" id="mag-s-mistral-model" placeholder="mistral-small-latest">
+        <div class="mag-hint">Default: mistral-small-latest. Also on free tier: open-mistral-nemo.</div>
+      </div>
+      <div class="mag-field">
+        <label>Groq API Key <em style="opacity:.6">(4th — free tier, ~1K req/day, Llama 70B, very fast)</em></label>
         <input type="password" id="mag-s-groq" placeholder="gsk_...">
         <div class="mag-hint">Free key: <strong>console.groq.com</strong> → Sign up → API Keys. No credit card required.</div>
       </div>
@@ -2386,6 +2434,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-hf-model')).value         = CFG.hfModel;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter')).value       = CFG.openrouterKey;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter-model')).value = CFG.openrouterModel;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-mistral')).value          = CFG.mistralKey;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-mistral-model')).value   = CFG.mistralModel;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value             = CFG.groqKey;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value       = CFG.groqModel;
     document.getElementById('mag-s-claude').value       = CFG.claudeKey;
@@ -2651,6 +2701,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     set('hf_model',         (/** @type {HTMLInputElement} */(document.getElementById('mag-s-hf-model')).value.trim()) || HF_DEFAULT);
     set('openrouter_key',   /** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter')).value.trim());
     set('openrouter_model', (/** @type {HTMLInputElement} */(document.getElementById('mag-s-openrouter-model')).value.trim()) || OPENROUTER_DEFAULT);
+    set('mistral_key',      /** @type {HTMLInputElement} */(document.getElementById('mag-s-mistral')).value.trim());
+    set('mistral_model',    (/** @type {HTMLInputElement} */(document.getElementById('mag-s-mistral-model')).value.trim()) || MISTRAL_DEFAULT);
     set('groq_key',         /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value.trim());
     set('groq_model',       (/** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value.trim()) || GROQ_DEFAULT);
     set('claude_key',      document.getElementById('mag-s-claude').value.trim());
