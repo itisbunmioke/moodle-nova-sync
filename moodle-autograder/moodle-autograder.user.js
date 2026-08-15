@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.33
+// @version      2.5.34
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1561,7 +1561,10 @@ Your response is the feedback text itself, and nothing else. Do not explain your
 
       const scoringRaw = await callAI(scoringPrompt, inlineData);
       try { grading = parseGradingJSON(scoringRaw); } catch (e) {
-        throw new Error(`AI returned invalid JSON — try again. Raw: ${scoringRaw.slice(0, 200)}`);
+        setStatus('Response was not JSON — retrying with enforced format…', '#ffb060');
+        const retryRaw = await callAI('CRITICAL: Output ONLY a raw JSON object starting with {. No text before or after it.\n\n' + scoringPrompt, inlineData);
+        try { grading = parseGradingJSON(retryRaw); }
+        catch (e2) { throw new Error(`AI returned invalid JSON — try again. Raw: ${retryRaw.slice(0, 200)}`); }
       }
       if (!Array.isArray(grading?.scores)) {
         throw new Error(`AI response missing scores array. Raw: ${scoringRaw.slice(0, 200)}`);
@@ -1585,7 +1588,10 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     // ── Combined mode (normal assignments) ───────────────────────────────────
     const combinedRaw = await callAI(combinedPrompt, inlineData);
     try { grading = parseGradingJSON(combinedRaw); } catch (e) {
-      throw new Error(`AI returned invalid JSON — try again. Raw: ${combinedRaw.slice(0, 200)}`);
+      setStatus('Response was not JSON — retrying with enforced format…', '#ffb060');
+      const retryRaw = await callAI('CRITICAL: Output ONLY a raw JSON object starting with {. No text before or after it.\n\n' + combinedPrompt, inlineData);
+      try { grading = parseGradingJSON(retryRaw); }
+      catch (e2) { throw new Error(`AI returned invalid JSON — try again. Raw: ${retryRaw.slice(0, 200)}`); }
     }
     if (!Array.isArray(grading?.scores)) {
       throw new Error(`AI response missing scores array. Raw: ${combinedRaw.slice(0, 200)}`);
