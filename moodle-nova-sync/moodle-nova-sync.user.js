@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.9.1
+// @version      4.9.2
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
@@ -1361,6 +1361,10 @@
             <input type="checkbox" id="mns-fs-skip" checked>Skip cells that already have a grade
           </label>
         </div>
+        ${mappings.some(m => m.suggestName) ? `<div id="mns-fs-accept-bar" style="padding:5px 12px;background:#eef0ff;border-bottom:1px solid #ccd;font-size:11px;display:flex;align-items:center;justify-content:space-between">
+          <span style="color:#4455bb">❓ Same name suggested across all rows</span>
+          <button id="mns-fs-accept-all" style="font-size:11px;padding:2px 10px;background:#4455bb;color:#fff;border:none;border-radius:4px;cursor:pointer">Accept all ❓</button>
+        </div>` : ''}
         <table class="mns-tbl" style="font-size:11px">
           <thead><tr><th>Nova Row</th><th>Moodle Activity</th><th>Grade</th></tr></thead>
           <tbody>${tableRows}</tbody>
@@ -1371,7 +1375,7 @@
       panel.style.display = 'block';
       document.getElementById('mns-close-panel').onclick = () => { panel.style.display = 'none'; };
 
-      // ❓ suggestion click — promote to accepted match, re-render row, update button count
+      // ❓ individual suggestion click — promote one row to accepted match
       panel.querySelector('tbody').addEventListener('click', e => {
         const pick = e.target.closest('.mns-fs-sug-pick');
         if (!pick) return;
@@ -1382,6 +1386,21 @@
         mappings[idx].suggestGrade = '';
         panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
         document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
+        if (!mappings.some(m => m.suggestName)) document.getElementById('mns-fs-accept-bar')?.remove();
+      });
+
+      // "Accept all ❓" button — promote every remaining suggestion at once
+      document.getElementById('mns-fs-accept-all')?.addEventListener('click', () => {
+        for (const m of mappings) {
+          if (m.suggestName && m.suggestGrade) {
+            m.grade        = m.suggestGrade;
+            m.suggestName  = '';
+            m.suggestGrade = '';
+          }
+        }
+        panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
+        document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
+        document.getElementById('mns-fs-accept-bar')?.remove();
       });
 
       document.getElementById('mns-go').onclick = async () => {
