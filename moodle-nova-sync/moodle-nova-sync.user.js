@@ -1324,20 +1324,21 @@
         const studentMatch = actKey ? findStudentMatch(studentCol.name, activities[actKey]) : null;
         const isConfident = studentMatch && studentMatch.type !== 'suggestion';
         const grade = isConfident ? studentMatch.student.grade || '' : '';
-        const suggestName = (!isConfident && studentMatch) ? studentMatch.student.name : '';
+        const suggestName  = (!isConfident && studentMatch) ? studentMatch.student.name  : '';
+        const suggestGrade = (!isConfident && studentMatch) ? studentMatch.student.grade || '' : '';
         const input = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
         const existing = input?.value.trim() || '';
-        return { assessmentRow, rowIdx, actKey, grade, suggestName, input, existing };
+        return { assessmentRow, rowIdx, actKey, grade, suggestName, suggestGrade, input, existing };
       }).filter(m => m.actKey); // skip rows with no matching activity
 
-      const toFill = mappings.filter(m => m.grade && m.input).length;
-      const noGrade = mappings.filter(m => m.actKey && !m.grade).length;
+      const fsToFill = () => mappings.filter(m => m.grade && m.input).length;
+      const noGrade = mappings.filter(m => m.actKey && !m.grade && !m.suggestGrade).length;
 
-      const tableRows = mappings.map(m => {
+      const renderFsRows = maps => maps.map((m, i) => {
         const gradeDisplay = m.grade
           ? `<b>${m.grade}</b>`
           : m.suggestName
-          ? `<span style="color:#6677aa;font-size:10px">❓ ${m.suggestName}?</span>`
+          ? `<span class="mns-fs-sug-pick" data-idx="${i}" title="Click to accept this match" style="cursor:pointer;text-decoration:underline dotted;color:#4455bb">❓ ${m.suggestName}</span> <small style="color:#6677aa">(click to accept)</small>`
           : '—';
         return `
         <tr style="background:${m.grade ? '#f0fff0' : m.suggestName ? '#eef0ff' : '#fffbe6'}">
@@ -1348,10 +1349,11 @@
           </td>
         </tr>`;
       }).join('');
+      const tableRows = renderFsRows(mappings);
 
       panel.innerHTML = `
         <div class="mns-ph">
-          <span>Fill Student: ${studentCol.name} &nbsp;(${toFill} grades)</span>
+          <span>Fill Student: ${studentCol.name} &nbsp;(${fsToFill()} grades)</span>
           <span class="mns-px" id="mns-close-panel">✕</span>
         </div>
         <div style="padding:6px 12px;background:#fff8e1;border-bottom:1px solid #ffe082;font-size:11px">
@@ -1364,10 +1366,23 @@
           <tbody>${tableRows}</tbody>
         </table>
         ${noGrade ? `<div style="padding:4px 12px;font-size:10px;color:#888">⚠ ${noGrade} matched rows have no grade for this student in Moodle.</div>` : ''}
-        <button id="mns-go" style="background:#2a7a2a">✓ Fill ${toFill} grade(s) for ${studentCol.name}</button>
+        <button id="mns-go" style="background:#2a7a2a">✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}</button>
       `;
       panel.style.display = 'block';
       document.getElementById('mns-close-panel').onclick = () => { panel.style.display = 'none'; };
+
+      // ❓ suggestion click — promote to accepted match, re-render row, update button count
+      panel.querySelector('tbody').addEventListener('click', e => {
+        const pick = e.target.closest('.mns-fs-sug-pick');
+        if (!pick) return;
+        const idx = parseInt(pick.dataset.idx, 10);
+        if (isNaN(idx) || !mappings[idx] || !mappings[idx].suggestGrade) return;
+        mappings[idx].grade        = mappings[idx].suggestGrade;
+        mappings[idx].suggestName  = '';
+        mappings[idx].suggestGrade = '';
+        panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
+        document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
+      });
 
       document.getElementById('mns-go').onclick = async () => {
         const skipExisting = document.getElementById('mns-fs-skip').checked;
