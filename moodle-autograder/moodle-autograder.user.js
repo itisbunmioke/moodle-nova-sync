@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.34
+// @version      2.5.35
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -926,6 +926,8 @@ Respond ONLY with valid JSON in this exact shape (no markdown, no explanation ou
 - TERMINOLOGY AND CONTEXT: Students may address a requirement using different words, headings, or structure than the rubric expects. Before concluding a requirement is absent, check whether the concept appears under alternative terminology, a different section heading, or phrasing the rubric did not anticipate. A requirement is absent only when you have confirmed — across the entire visible submission — that neither the concept nor any equivalent expression of it appears anywhere.
 - When uncertain between two adjacent levels, always choose the higher one. The default direction is credit, not deduction.
 - BENEFIT OF THE DOUBT: A student who has made a genuine attempt at a requirement and partially succeeds should receive the level above the lowest. Reserve the bottom rubric level only for submissions that make no meaningful attempt whatsoever. Do not cascade a single gap into multiple criteria — if one issue affects several criteria, assign the deduction to the criterion it most clearly belongs to and be conservative about repeating it elsewhere.
+- SCORE–FEEDBACK CONSISTENCY (non-negotiable): Your scores and feedback must agree. If every criterion received maximum points, the feedback field must not mention any failing, gap, omission, or deficiency — not even a minor one. If feedback mentions that something is missing, incorrect, incomplete, or could be improved, you must have deducted points in the relevant criterion. Writing deduction-language in feedback while awarding full marks everywhere is a self-contradiction and a grading error. When you draft feedback, cross-check every negative claim against your scores: if no deduction exists for it, remove the claim from feedback.
+- HALLUCINATION BAN: Do not fabricate, invent, or infer any problem, gap, or deficiency that you cannot directly observe in the submission text above. You may only state that something is missing after confirming it is absent from every visible section of the submission. A suspicion is not evidence. A possibility is not an absence. Do not write that something "may be" or "might be" missing — only assert absence when you have confirmed it. Every negative claim in both justifications and feedback must point to a specific, observable gap in the submission.
 ${hasCode ? `- CRITICAL CODE REVIEW: Do a complete pass through every line of submitted code before scoring.
   (a) For each requirement in the INSTRUCTIONS, identify the exact function, class, or logic block that implements it — or state it is absent.
   (b) If a function exists, read its body: verify the logic actually does what the requirement demands. A function name alone is not evidence it works correctly.
@@ -1407,7 +1409,20 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       if (answer) return answer;
       return '';
     }
-    // 3. Inline process narration — model narrating its decision without a standard preamble.
+    // 3a. Single high-confidence signals — model narrating about the prompt/AI itself.
+    //     Any one of these is unambiguous meta-commentary; discard the entire response.
+    const hardSignals = [
+      /\bi recall\b.{0,60}(?:prompt|test|AI|blank|feedback|instruct)/i,
+      /these prompts?\b/i,
+      /whether the AI\b/i,
+      /(?:this is |it(?:'s| is) )a test\b/i,
+      /\bblank feedback\b/i,
+      /the prompt (?:says|requires|instructs|asks|tells)/i,
+      /(?:the )?AI (?:should|must|can|will) (?:recogni[sz]e|determine|decide|return|output) (?:when|whether|if)/i,
+      /my (?:instructions?|rules?|guidelines?) (?:say|require|state|tell me)/i,
+    ];
+    if (hardSignals.some(p => p.test(text))) return '';
+    // 3b. Inline process narration — model narrating its decision without a standard preamble.
     // Detected by 2+ signals that the text is ABOUT the grading process rather than actual feedback.
     const metaSignals = [
       /\bi should (?:return|output|write|give|include)/i,
