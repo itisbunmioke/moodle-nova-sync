@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.9.3
+// @version      4.9.4
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
@@ -1329,7 +1329,7 @@
         const input = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
         const existing = input?.value.trim() || '';
         return { assessmentRow, rowIdx, actKey, grade, suggestName, suggestGrade, input, existing };
-      }).filter(m => m.actKey); // skip rows with no matching activity
+      }); // unmatched rows (no actKey) are kept so user can assign them via the dropdown
 
       const fsToFill = () => mappings.filter(m => m.grade && m.input).length;
       const noGrade = mappings.filter(m => m.actKey && !m.grade && !m.suggestGrade).length;
@@ -1341,9 +1341,14 @@
           ? `<span class="mns-fs-sug-pick" data-idx="${i}" title="Click to accept this match" style="cursor:pointer;text-decoration:underline dotted;color:#4455bb">❓ ${m.suggestName}</span> <small style="color:#6677aa">(click to accept)</small>`
           : '—';
         return `
-        <tr style="background:${m.grade ? '#f0fff0' : m.suggestName ? '#eef0ff' : '#fffbe6'}">
+        <tr style="background:${m.grade ? '#f0fff0' : m.suggestName ? '#eef0ff' : m.actKey ? '#fffbe6' : '#fff0f0'}">
           <td style="padding:3px 8px">${m.assessmentRow.course ? m.assessmentRow.course + ' › ' : ''}${m.assessmentRow.assessment}</td>
-          <td style="padding:3px 8px;color:#555">${m.actKey}</td>
+          <td style="padding:3px 6px">
+            <select data-idx="${i}" class="mns-fs-act-sel" style="font-size:11px;width:100%;padding:2px">
+              <option value="">— skip —</option>
+              ${actKeys.map(k => `<option value="${k}" ${k === m.actKey ? 'selected' : ''}>${k}</option>`).join('')}
+            </select>
+          </td>
           <td style="padding:3px 8px;text-align:center">
             ${m.existing ? `<span style="color:#b05000;font-size:10px">${m.existing} → </span>` : ''}${gradeDisplay}
           </td>
@@ -1384,6 +1389,30 @@
         mappings[idx].grade        = mappings[idx].suggestGrade;
         mappings[idx].suggestName  = '';
         mappings[idx].suggestGrade = '';
+        panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
+        document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
+        if (!mappings.some(m => m.suggestName)) document.getElementById('mns-fs-accept-bar')?.remove();
+      });
+
+      // Activity picker change — re-resolve student match for the changed row
+      panel.querySelector('tbody').addEventListener('change', e => {
+        const sel = e.target.closest('.mns-fs-act-sel');
+        if (!sel) return;
+        const idx = parseInt(sel.dataset.idx, 10);
+        if (isNaN(idx) || !mappings[idx]) return;
+        const newActKey = sel.value;
+        mappings[idx].actKey = newActKey || null;
+        if (newActKey && activities[newActKey]) {
+          const studentMatch = findStudentMatch(studentCol.name, activities[newActKey]);
+          const isConfident = studentMatch && studentMatch.type !== 'suggestion';
+          mappings[idx].grade        = isConfident ? studentMatch.student.grade || '' : '';
+          mappings[idx].suggestName  = (!isConfident && studentMatch) ? studentMatch.student.name  : '';
+          mappings[idx].suggestGrade = (!isConfident && studentMatch) ? studentMatch.student.grade || '' : '';
+        } else {
+          mappings[idx].grade = '';
+          mappings[idx].suggestName  = '';
+          mappings[idx].suggestGrade = '';
+        }
         panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
         document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
         if (!mappings.some(m => m.suggestName)) document.getElementById('mns-fs-accept-bar')?.remove();
