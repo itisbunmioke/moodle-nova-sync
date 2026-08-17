@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.48
+// @version      2.5.49
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -89,6 +89,17 @@
   function getAssignmentDbId() {
     return document.querySelector('[data-assignmentid]')?.getAttribute('data-assignmentid') || null;
   }
+
+  // Tracks setTimeout IDs created by applyResultToLiveDom and the Grade One 2-second re-apply.
+  // Cleared at the start of onMoodleNavigated so stale retries never fire on the next student's
+  // rubric — which matters because level IDs are assignment-wide; a click on the wrong student's
+  // page would select cells and could trigger Willis Moodle's "auto-advance after rubric" early.
+  const _liveTimers = /** @type {Set<number>} */(new Set());
+  const _trackTimer = (/** @type {Function} */ fn, /** @type {number} */ ms) => {
+    const id = /** @type {number} */(setTimeout(() => { _liveTimers.delete(id); fn(); }, ms));
+    _liveTimers.add(id);
+  };
+  const _cancelLiveTimers = () => { _liveTimers.forEach(clearTimeout); _liveTimers.clear(); };
 
   // After saving a grade via form POST the AMD grader still shows the old (unselected) rubric
   // because the SPA cached its state before we posted. We fix this by directly updating the
@@ -220,7 +231,7 @@
     };
 
     writeRemarks(); // immediate attempt
-    if (!skipDelays) setTimeout(writeRemarks, 700); // retry after AMD may have revealed textareas
+    if (!skipDelays) _trackTimer(writeRemarks, 700); // retry after AMD may have revealed textareas
 
     // Feedback update strategy (for Moodle 4.x with editor_tiny / TinyMCE 6):
     //   Pass 1 — write to backing textarea (catches editors not yet initialised)
@@ -287,8 +298,8 @@
       };
 
       applyFeedbackLive(); // immediate: TinyMCE API or iframe or textarea
-      if (!skipDelays) setTimeout(applyFeedbackLive, 400);  // pass 2: after iframe loads
-      if (!skipDelays) setTimeout(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
+      if (!skipDelays) _trackTimer(applyFeedbackLive, 400);  // pass 2: after iframe loads
+      if (!skipDelays) _trackTimer(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
     }
   }
 
@@ -3350,8 +3361,9 @@ Check: same variable names, identical code logic, same written arguments, same p
         document.getElementById(`mag-card-${student.uid}`).style.opacity = '0.7';
 
         applyResultToLiveDom(rubric, editedResult);
-        // Re-apply after 2 s in case Moodle's AMD re-rendered the panel
-        setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
+        // Re-apply after 2 s in case Moodle's AMD re-rendered the panel.
+        // Tracked so navigation can cancel it before it fires on the next student's page.
+        _trackTimer(() => applyResultToLiveDom(rubric, editedResult), 2000);
 
         // Show Done / Stay / Move row after successful post
         const resultRow = /** @type {HTMLElement|null} */(document.getElementById(`mag-result-row-${student.uid}`));
@@ -3722,11 +3734,13 @@ Check: same variable names, identical code logic, same written arguments, same p
         let submissionText = student.onlineText || '';
         let inlineData     = null;
         let fileLinks = student.fileLinks;
-        // Always fetch the grade page: resolves real name + provides the full file list.
-        // The grade page is authoritative — it shows every separately submitted file.
-        // The list-page snapshot may show only some (e.g. just the zip when the student
-        // also uploaded loose files alongside it).
-        const fetched = await fetchStudentFiles(student);
+        // Reuse the fetch result from onMoodleNavigated when available — it already checked
+        // graded state and resolved the real name, so fetching again is redundant.
+        // When gradeCurrentStudent is called directly (toolbar button, re-grade), no prefetch
+        // exists and we fetch fresh.
+        const _pre = /** @type {any} */(student)._prefetch;
+        if (_pre) delete /** @type {any} */(student)._prefetch;
+        const fetched = _pre || await fetchStudentFiles(student);
         if (fetched.fileLinks.length) {
           // Start with grade-page links; append any list-page links not already present
           const seen = new Set(fetched.fileLinks.map(f => f.url));
@@ -3765,7 +3779,24 @@ Check: same variable names, identical code logic, same written arguments, same p
             throw new Error(`Could not read any submitted files for ${student.name}. The files may be corrupted or in an unsupported format.`);
           }
         }
-        const result = await gradeSubmission(title, instructions, rubric, submissionText, inlineData, submittedFiles);
+        // One retry for transient failures (rate-limit, network blip, 5xx).
+        // Permanent errors (missing API key, bad prompt) are not worth retrying.
+        let result;
+        for (let _attempt = 0; _attempt < 2; _attempt++) {
+          try {
+            result = await gradeSubmission(title, instructions, rubric, submissionText, inlineData, submittedFiles);
+            break;
+          } catch (_gradeErr) {
+            const _msg = /** @type {Error} */(_gradeErr).message || '';
+            const _transient = _attempt === 0
+              && /429|503|502|504|rate.?limit|timeout|network|ECONNRESET/i.test(_msg)
+              && !/not configured|No AI provider/i.test(_msg);
+            if (!_transient) throw _gradeErr;
+            setStatus(`Transient error — retrying ${student.name} in 3 s…`, '#ffb060');
+            await sleep(3000);
+          }
+        }
+        if (!result) throw new Error('AI grading failed after retry.');
         results[student.uid] = result;
         /** @type {any} */(result)._extractedText = submissionText; // retain for per-session use
         plagiarismCache[student.uid] = { name: student.name, extractedText: submissionText };
@@ -3920,6 +3951,10 @@ Check: same variable names, identical code logic, same written arguments, same p
     };
 
     const onMoodleNavigated = async (/** @type {string} */ newUid) => {
+      // Cancel any stale applyResultToLiveDom retries from the previous student.
+      // Without this, the 2-second re-apply timer would click the old student's rubric
+      // level cells on the new student's page, potentially triggering auto-advance.
+      _cancelLiveTimers();
       const student = getOrCreateStudent(newUid);
       currentIdx    = students.indexOf(student);
       addedUids.add(newUid);
@@ -4000,6 +4035,9 @@ Check: same variable names, identical code logic, same written arguments, same p
           const nameEl = document.querySelector(`#mag-card-${newUid} .mag-card-name`);
           if (nameEl) nameEl.textContent = fetched.realName;
         }
+        // Cache for gradeCurrentStudent — avoids a redundant fetch of the same page.
+        // Consumed and cleared immediately inside gradeCurrentStudent.
+        /** @type {any} */(student)._prefetch = fetched;
       } catch (_e) {
         // XHR failed — treat as ungraded so grading can still proceed.
         gradedInMoodle = false;
