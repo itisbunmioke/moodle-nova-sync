@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.38
+// @version      2.5.39
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -117,15 +117,34 @@
       if (!cell) { console.warn('[MAG] No DOM cell for levelId', matchedLevel.id); rowMap.set(score.criterionIndex, { row: null, cid: criterion?.criterionId || null }); continue; }
 
       const row = /** @type {HTMLElement|null} */(cell.closest('tr.criterion, tr, [class*="criterion"]'));
-      if (row) {
-        for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
-          sib.classList.remove('checked', 'selected', 'currentlevel');
-          sib.removeAttribute('aria-checked');
+
+      // If this level is already selected, leave it — avoid triggering Moodle's
+      // toggle-off logic when we click a cell that already has 'checked'.
+      const alreadySelected = cell.classList.contains('checked')
+                           || cell.getAttribute('aria-checked') === 'true';
+      if (!alreadySelected) {
+        // Clear sibling cells first (excluding target so the click fires on uncheckd state).
+        if (row) {
+          for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+            if (sib !== cell) {
+              sib.classList.remove('checked', 'selected', 'currentlevel');
+              sib.removeAttribute('aria-checked');
+            }
+          }
+        }
+        try { cell.click(); } catch {}
+        // Manual fallback: if Moodle's handler didn't add 'checked' (no click handler on this build)
+        if (!cell.classList.contains('checked') && cell.getAttribute('aria-checked') !== 'true') {
+          if (row) {
+            for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+              sib.classList.remove('checked', 'selected', 'currentlevel');
+              sib.removeAttribute('aria-checked');
+            }
+          }
+          cell.classList.add('checked');
+          cell.setAttribute('aria-checked', 'true');
         }
       }
-      cell.classList.add('checked');
-      cell.setAttribute('aria-checked', 'true');
-      try { cell.click(); } catch {}
 
       const cid = criterion?.criterionId
                || (cell.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1]
@@ -201,14 +220,14 @@
     writeRemarks(); // immediate attempt
     setTimeout(writeRemarks, 700); // retry after AMD async handlers may have rendered textareas
 
-    // Moodle 4.05 uses editor_tiny (TinyMCE 6). The editor lives in a same-origin
-    // iframe: IFRAME#id_assignfeedbackcomments_editor_ifr (.tox-edit-area__iframe).
-    // window.tinymce is NOT exposed by Moodle's AMD loader, so the TinyMCE API is
-    // unavailable. Instead we write directly to the iframe body.
-    // Two-pass strategy:
-    //   Pass 1 (immediate):   write to textarea so TinyMCE reads our value on init
-    //   Pass 2 (1.5 s later): iframe is loaded → write directly to its body to
-    //                          update the visible content without a page reload
+    // Feedback update strategy (for Moodle 4.x with editor_tiny / TinyMCE 6):
+    //   Pass 1 — write to backing textarea (catches editors not yet initialised)
+    //   Pass 2 (400 ms) — try TinyMCE JS API first; if unavailable, write directly
+    //                     to the iframe body.  Runs at 400 ms so the iframe is
+    //                     loaded but Moodle hasn't had time to re-render from its
+    //                     internal model.
+    //   Pass 3 (1500 ms) — repeat pass 2 as a belt-and-suspenders retry in case
+    //                     Moodle re-rendered between pass 1 and pass 2.
     const feedback = result.feedback || '';
     if (CFG.postFeedback && feedback) {
       // feedback may already be HTML (when images are attached)
@@ -216,44 +235,57 @@
         ? feedback
         : '<p>' + feedback.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
 
+      const getFeedbackTA = () => /** @type {HTMLTextAreaElement|null} */(
+        document.querySelector('textarea[name*="assignfeedbackcomments_editor"]')
+        || document.querySelector('textarea[id*="assignfeedbackcomments"]')
+      );
       const getEditorFrame = () => {
-        const ta = /** @type {HTMLTextAreaElement|null} */(
-          document.querySelector('textarea[name*="assignfeedbackcomments_editor"]')
-        );
+        const ta = getFeedbackTA();
         const frameId = (ta?.id || 'id_assignfeedbackcomments_editor') + '_ifr';
         return /** @type {HTMLIFrameElement|null} */(document.getElementById(frameId));
       };
 
-      const applyFeedback = (/** @type {boolean} */ writeToIframe) => {
-        if (writeToIframe) {
-          const frame = getEditorFrame();
-          const body  = frame?.contentDocument?.body;
-          if (body) {
-            body.innerHTML = feedbackHtml;
-            // Sync backing textarea so form submission value is also current
-            const ta = /** @type {HTMLTextAreaElement|null} */(
-              document.querySelector('textarea[name*="assignfeedbackcomments_editor"]')
-            );
-            if (ta) ta.value = feedback;
-            console.log('[MAG] Feedback written to TinyMCE iframe body', frame.id);
-            return;
-          }
-          console.warn('[MAG] TinyMCE iframe not ready; frame:', frame?.id, '| body:', !!body);
+      // Pass 1: write to textarea so newly-initialising TinyMCE reads our value
+      const ta0 = getFeedbackTA();
+      if (ta0) {
+        ta0.value = feedback;
+        console.log('[MAG] Feedback pre-loaded into textarea', ta0.id || ta0.name);
+      }
+
+      const applyFeedbackLive = () => {
+        // Strategy A: TinyMCE JS API — updates internal model AND visible content.
+        // TinyMCE 6 exposes itself on window.tinymce even through Moodle's AMD loader.
+        const ta   = getFeedbackTA();
+        const edId = ta?.id || 'id_assignfeedbackcomments_editor';
+        const tiny = /** @type {any} */(window).tinymce || /** @type {any} */(window).tinyMCE;
+        const ed   = tiny?.get(edId) || (tiny?.editors?.length && tiny.editors[0]);
+        if (ed && typeof ed.setContent === 'function') {
+          ed.setContent(feedbackHtml);
+          ed.save?.(); // sync content back to textarea
+          if (ta) ta.value = feedback;
+          console.log('[MAG] Feedback set via TinyMCE API', edId);
           return;
         }
-        // Pass 1: pre-load textarea so TinyMCE reads it during initialisation
-        const ta = /** @type {HTMLTextAreaElement|null} */(
-          document.querySelector('textarea[name*="assignfeedbackcomments_editor"]')
-          || document.querySelector('textarea[id*="assignfeedbackcomments"]')
-        );
+        // Strategy B: write directly to the iframe body
+        const frame = getEditorFrame();
+        const body  = frame?.contentDocument?.body;
+        if (body) {
+          body.innerHTML = feedbackHtml;
+          if (ta) ta.value = feedback;
+          console.log('[MAG] Feedback written to iframe body', frame.id);
+          return;
+        }
+        // Strategy C: Atto / plain textarea (no iframe)
         if (ta) {
           ta.value = feedback;
-          console.log('[MAG] Feedback pre-loaded into textarea', ta.id || ta.name);
+          ta.dispatchEvent(new Event('input',  { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          console.log('[MAG] Feedback written to plain textarea');
         }
       };
 
-      applyFeedback(false);                        // pass 1: textarea pre-load
-      setTimeout(() => applyFeedback(true), 1500); // pass 2: direct iframe write
+      setTimeout(applyFeedbackLive, 400);  // pass 2: after iframe loads
+      setTimeout(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
     }
   }
 
@@ -3261,6 +3293,9 @@ Check: same variable names, identical code logic, same written arguments, same p
         document.getElementById(`mag-status-${student.uid}`).className   = 'mag-card-status done';
         document.getElementById(`mag-card-${student.uid}`).style.opacity = '0.7';
         applyResultToLiveDom(rubric, editedResult);
+        // Re-apply 2 s later in case Moodle's AMD re-rendered the panel (e.g. after
+        // detecting the grade save), which would otherwise revert our DOM changes.
+        setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
 
         // Auto-grade modes: navigate without showing interaction buttons
         if (isAutoGrading()) {
