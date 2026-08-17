@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.44
+// @version      2.5.45
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3338,19 +3338,13 @@ Check: same variable names, identical code logic, same written arguments, same p
           setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
         }
 
-        // Auto-grade modes: update the live form synchronously (no delayed retries that
-        // would fire on the next student's page), then save-and-navigate with Moodle's
-        // own saveandshownext button. This is belt-and-suspenders: postGrade() AJAX
-        // already saved the grade; saveandshownext saves it again from the updated form,
-        // ensuring the grade is committed regardless of which mechanism Moodle honours.
+        // Auto-grade modes: postGrade() AJAX already saved the grade (rubric + feedback).
+        // Navigate using the no-save arrow (next-user) so Moodle does NOT re-submit the
+        // grading form. saveandshownext reads AMD's internal rubric state (not our form
+        // hidden inputs) which has no level selected — using it would overwrite the
+        // AJAX-saved rubric with an empty submission, keeping only the feedback.
+        // next-user navigates without any form submission, so the AJAX save is untouched.
         if (isAutoGrading()) {
-          applyResultToLiveDom(rubric, editedResult, { immediate: true });
-          const sn = /** @type {HTMLElement|null} */(document.querySelector(
-            'button[name="saveandshownext"], input[name="saveandshownext"], ' +
-            '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
-            'button[name="saveandnext"], input[name="saveandnext"]'
-          ));
-          if (sn) { sn.click(); return; }
           const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
           if (mn) { mn.click(); return; }
           document.getElementById('mag-next-btn')?.click();
