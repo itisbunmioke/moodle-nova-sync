@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.43
+// @version      2.5.44
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -111,6 +111,28 @@
                         || criterion.levels.reduce((/** @type {any} */ a, /** @type {any} */ b) =>
                             Math.abs(b.points - score.pointsAwarded) < Math.abs(a.points - score.pointsAwarded) ? b : a);
       if (!matchedLevel?.id) { rowMap.set(score.criterionIndex, { row: null, cid: criterion?.criterionId || null }); continue; }
+
+      // In immediate mode (auto-grade navigation), skip cell.click() entirely.
+      // cell.click() triggers Moodle's AMD rubric handler which fires an auto-save
+      // and navigation cascade — that is the root cause of cycling.
+      // Instead, directly inject/update the form hidden input; saveandshownext
+      // serialises the form (including our injected input) and saves the correct grade.
+      if (skipDelays) {
+        const cidImm = criterion?.criterionId ? String(criterion.criterionId) : null;
+        if (cidImm) {
+          const fldName = `advancedgrading[criteria][${cidImm}][levelid]`;
+          let hi = /** @type {HTMLInputElement|null} */(document.querySelector(`input[name="${fldName}"]`));
+          if (!hi) {
+            hi = /** @type {HTMLInputElement} */(document.createElement('input'));
+            hi.type = 'hidden';
+            hi.name = fldName;
+            document.querySelector('form#mform1')?.appendChild(hi);
+          }
+          if (hi) hi.value = String(matchedLevel.id);
+        }
+        rowMap.set(score.criterionIndex, { row: null, cid: cidImm });
+        continue;
+      }
 
       const cell = /** @type {HTMLElement|null} */(
         document.querySelector(`[id$="-levels-${matchedLevel.id}"]`)
