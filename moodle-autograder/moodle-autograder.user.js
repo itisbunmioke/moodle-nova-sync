@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.42
+// @version      2.5.43
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -95,7 +95,9 @@
   // live DOM: find each rubric level cell by its ID suffix, clear siblings, mark it checked,
   // and fire a click so Moodle's own cell-click handler (if present) can also run.
   // Also update the Atto feedback editor div and its backing textarea.
-  function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result) {
+  function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean}} */ opts = {}) {
+    // immediate: true → skip all setTimeout retries (safe to call just before navigation)
+    const skipDelays = !!opts.immediate;
     // ── Phase 1: mark ALL rubric level cells first ────────────────────────────
     // Build a map of criterionIndex → {row, cid} for use in Phase 2.
     // We click ALL cells before Phase 2 runs, because some Moodle AMD themes
@@ -218,7 +220,7 @@
     };
 
     writeRemarks(); // immediate attempt
-    setTimeout(writeRemarks, 700); // retry after AMD async handlers may have rendered textareas
+    if (!skipDelays) setTimeout(writeRemarks, 700); // retry after AMD may have revealed textareas
 
     // Feedback update strategy (for Moodle 4.x with editor_tiny / TinyMCE 6):
     //   Pass 1 — write to backing textarea (catches editors not yet initialised)
@@ -284,8 +286,9 @@
         }
       };
 
-      setTimeout(applyFeedbackLive, 400);  // pass 2: after iframe loads
-      setTimeout(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
+      applyFeedbackLive(); // immediate: TinyMCE API or iframe or textarea
+      if (!skipDelays) setTimeout(applyFeedbackLive, 400);  // pass 2: after iframe loads
+      if (!skipDelays) setTimeout(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
     }
   }
 
@@ -3313,20 +3316,21 @@ Check: same variable names, identical code logic, same written arguments, same p
           setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
         }
 
-        // Auto-grade modes: navigate without showing interaction buttons.
-        // postGrade() already saved the AI grade via AJAX; using saveandshownext here
-        // would re-submit the live Moodle form (which still holds the old grade data,
-        // since applyResultToLiveDom is skipped in auto mode), overwriting the save.
-        // Use next-user (navigate only, no form submit) to avoid that overwrite.
+        // Auto-grade modes: update the live form synchronously (no delayed retries that
+        // would fire on the next student's page), then save-and-navigate with Moodle's
+        // own saveandshownext button. This is belt-and-suspenders: postGrade() AJAX
+        // already saved the grade; saveandshownext saves it again from the updated form,
+        // ensuring the grade is committed regardless of which mechanism Moodle honours.
         if (isAutoGrading()) {
-          const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
-          if (mn) { mn.click(); return; }
+          applyResultToLiveDom(rubric, editedResult, { immediate: true });
           const sn = /** @type {HTMLElement|null} */(document.querySelector(
             'button[name="saveandshownext"], input[name="saveandshownext"], ' +
             '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
             'button[name="saveandnext"], input[name="saveandnext"]'
           ));
           if (sn) { sn.click(); return; }
+          const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
+          if (mn) { mn.click(); return; }
           document.getElementById('mag-next-btn')?.click();
           return;
         }
