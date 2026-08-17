@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.36
+// @version      2.5.37
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -66,6 +66,7 @@
     get instructorName()      { return get('instructor_name', 'Instructor'); },
     get instructorStyle()     { return get('instructor_style', 'direct and constructive'); },
     get autoPost()            { return get('auto_post',      'false') === 'true'; },
+    get postFeedback()             { return get('post_feedback',            'true')  === 'true'; },
     get postRemarks()              { return get('post_remarks',            'false') === 'true'; },
     get postRemarksDeductedOnly()  { return get('post_remarks_deducted_only', 'false') === 'true'; },
   };
@@ -209,7 +210,7 @@
     //   Pass 2 (1.5 s later): iframe is loaded → write directly to its body to
     //                          update the visible content without a page reload
     const feedback = result.feedback || '';
-    if (feedback) {
+    if (CFG.postFeedback && feedback) {
       // feedback may already be HTML (when images are attached)
       const feedbackHtml = feedback.trimStart().startsWith('<')
         ? feedback
@@ -1737,9 +1738,11 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     }
     console.log('[MAG] rubric levels set:', rubricFieldsSet, '/ ', rubric?.length);
 
-    // 5. Feedback
-    fd.set('assignfeedbackcomments_editor[text]',   result.feedback || '');
-    fd.set('assignfeedbackcomments_editor[format]', '1');
+    // 5. Feedback (omitted when user has unchecked "Post feedback" in review panel)
+    if (CFG.postFeedback) {
+      fd.set('assignfeedbackcomments_editor[text]',   result.feedback || '');
+      fd.set('assignfeedbackcomments_editor[format]', '1');
+    }
 
     const bodyStr = fdToBody(fd);
     setStatus(`Posting grade for ${student.name}…`, '#c9a0ff');
@@ -1835,7 +1838,8 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     setStatus('Plagiarism check complete.', '#80d0a0');
 
     const overlay = document.createElement('div');
-    overlay.id = 'mag-plag-overlay';
+    overlay.id        = 'mag-plag-overlay';
+    overlay.className = 'mag-plag-overlay';
 
     const checkedCount = Object.keys(cache).length;
     const SHOW_MIN = 0.40;
@@ -1885,7 +1889,11 @@ Your response is the feedback text itself, and nothing else. Do not explain your
         </div>
       </div>`;
 
-    (document.getElementById('mag-review-overlay') || document.body).appendChild(overlay);
+    // Append to body (not review overlay) so z-index stacking works between the two panels
+    document.body.appendChild(overlay);
+    // Plag panel opens on top; reset review overlay to base z-index
+    const _rv = document.getElementById('mag-review-overlay');
+    if (_rv) _rv.style.zIndex = '1000000';
 
     const closeBtn = document.getElementById('mag-plag-close');
     if (closeBtn) closeBtn.onclick = () => overlay.remove();
@@ -1893,6 +1901,11 @@ Your response is the feedback text itself, and nothing else. Do not explain your
 
     // Draggable by header — same pattern as the review panel
     overlay.addEventListener('mousedown', e => {
+      // Click-to-front: plag panel rises above review overlay
+      overlay.style.zIndex = '1000002';
+      const rv = document.getElementById('mag-review-overlay');
+      if (rv) rv.style.zIndex = '1000000';
+
       const header = /** @type {HTMLElement|null} */(/** @type {Element} */(e.target).closest('.mag-plag-header'));
       if (!header) return;
       const box = /** @type {HTMLElement|null} */(overlay.querySelector('.mag-plag-box'));
@@ -2295,7 +2308,7 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     /* ── Plagiarism panel ─────────────────────────────────────────────────── */
     .mag-plag-overlay {
-      display: flex; position: absolute; inset: 0; z-index: 10;
+      display: flex; position: fixed; inset: 0; z-index: 1000001;
       background: rgba(0,0,0,0.60); align-items: center; justify-content: center;
     }
     .mag-plag-box {
@@ -2955,6 +2968,11 @@ Check: same variable names, identical code logic, same written arguments, same p
 
   // Drag logic for the review box — activated by mousedown on .mag-review-header
   reviewOverlay.addEventListener('mousedown', e => {
+    // Click-to-front: review overlay rises above plag overlay
+    reviewOverlay.style.zIndex = '1000002';
+    const plagEl = document.getElementById('mag-plag-overlay');
+    if (plagEl) plagEl.style.zIndex = '1000001';
+
     const header = /** @type {HTMLElement} */(e.target).closest('.mag-review-header');
     if (!header) return;
     const box = /** @type {HTMLElement} */ (document.getElementById('mag-review-box'));
@@ -2981,6 +2999,14 @@ Check: same variable names, identical code logic, same written arguments, same p
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
+
+  function getPostBtnLabel() {
+    const fb = CFG.postFeedback, rm = CFG.postRemarks;
+    if (fb && rm) return 'Post Grade, Feedback & Remarks';
+    if (fb)       return 'Post Grade & Feedback';
+    if (rm)       return 'Post Grade & Remarks';
+    return 'Post Grade Only';
+  }
 
   function buildStudentCard(student, rubric, result, idx) {
     const card = document.createElement('div');
@@ -3056,7 +3082,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         ${result && !result.error && !result.moodleGraded ? `
           <div class="mag-card-actions">
             <div id="mag-post-wrap-${student.uid}" style="display:flex;gap:8px;align-items:center">
-              <button class="mag-post-btn" id="mag-post-${student.uid}">${CFG.postRemarks ? 'Post Grade, Feedback & Remarks' : 'Post Grade & Feedback'}</button>
+              <button class="mag-post-btn" id="mag-post-${student.uid}">${getPostBtnLabel()}</button>
               <button class="mag-skip-btn" id="mag-skip-${student.uid}">Skip</button>
             </div>
             <div class="mag-post-progress" id="mag-postprog-${student.uid}">
@@ -3353,6 +3379,10 @@ Check: same variable names, identical code logic, same written arguments, same p
         <span class="mag-progress-text" id="mag-review-progress">
           ${doneCount} / ${students.length} graded
         </span>
+        <label class="mag-remarks-label" title="Include the AI feedback comment when posting a grade (uncheck to post scores only)">
+          <input type="checkbox" id="mag-feedback-toggle" ${CFG.postFeedback ? 'checked' : ''}>
+          Post feedback
+        </label>
         <label class="mag-remarks-label" title="When posting a grade, also write the AI justification into the remark box at the end of each rubric row">
           <input type="checkbox" id="mag-remarks-toggle" ${CFG.postRemarks ? 'checked' : ''}>
           Post remarks
@@ -3379,8 +3409,24 @@ Check: same variable names, identical code logic, same written arguments, same p
     document.getElementById('mag-review-close').onclick  = () => reviewOverlay.classList.remove('open');
     document.getElementById('mag-review-close2').onclick = () => reviewOverlay.classList.remove('open');
 
-    const deductedToggle = /** @type {HTMLInputElement|null} */(document.getElementById('mag-remarks-deducted-toggle'));
-    const remarksToggle  = /** @type {HTMLInputElement|null} */(document.getElementById('mag-remarks-toggle'));
+    const deductedToggle  = /** @type {HTMLInputElement|null} */(document.getElementById('mag-remarks-deducted-toggle'));
+    const remarksToggle   = /** @type {HTMLInputElement|null} */(document.getElementById('mag-remarks-toggle'));
+    const feedbackToggle  = /** @type {HTMLInputElement|null} */(document.getElementById('mag-feedback-toggle'));
+
+    const refreshPostBtnLabels = () => {
+      const lbl = getPostBtnLabel();
+      for (const btn of /** @type {NodeListOf<HTMLButtonElement>} */(document.querySelectorAll('.mag-post-btn'))) {
+        const knownLabels = ['Post Grade & Feedback', 'Post Grade, Feedback & Remarks', 'Post Grade & Remarks', 'Post Grade Only'];
+        if (knownLabels.includes(btn.textContent || '')) btn.textContent = lbl;
+      }
+    };
+
+    if (feedbackToggle) {
+      feedbackToggle.onchange = () => {
+        set('post_feedback', feedbackToggle.checked ? 'true' : 'false');
+        refreshPostBtnLabels();
+      };
+    }
 
     // Apply / remove visual greyed-out class on the deductions label
     const setDeductedEnabled = (/** @type {boolean} */ enabled) => {
@@ -3399,12 +3445,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         set('post_remarks', on ? 'true' : 'false');
         setDeductedEnabled(on);
         if (!on && deductedToggle) { deductedToggle.checked = false; set('post_remarks_deducted_only', 'false'); }
-        // Refresh all un-posted post buttons to reflect new label
-        for (const btn of /** @type {NodeListOf<HTMLButtonElement>} */(document.querySelectorAll('.mag-post-btn'))) {
-          if (btn.textContent === 'Post Grade & Feedback' || btn.textContent === 'Post Grade, Feedback & Remarks') {
-            btn.textContent = on ? 'Post Grade, Feedback & Remarks' : 'Post Grade & Feedback';
-          }
-        }
+        refreshPostBtnLabels();
       };
     }
 
