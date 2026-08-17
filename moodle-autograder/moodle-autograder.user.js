@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.41
+// @version      2.5.42
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1738,6 +1738,16 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     for (const el of /** @type {HTMLInputElement[]} */([...form.querySelectorAll('input[name]')])) {
       const m = el.name.match(/^advancedgrading\[criteria\]\[(\d+)\]\[levelid\]$/);
       if (m) formCriteriaMap.set(m[1], `advancedgrading[criteria][${m[1]}]`);
+    }
+    // AMD only creates advancedgrading[criteria][N][levelid] hidden inputs when the user
+    // clicks a rubric level. For ungraded students those inputs don't exist in the live
+    // form yet, so formCriteriaMap would be empty and no rubric data gets submitted.
+    // Supplement from the rubric structure (always available) to cover that case.
+    for (const criterion of rubric || []) {
+      const cid = /** @type {any} */(criterion).criterionId;
+      if (cid && !formCriteriaMap.has(String(cid))) {
+        formCriteriaMap.set(String(cid), `advancedgrading[criteria][${cid}]`);
+      }
     }
     const formCriteriaByIndex = [...formCriteriaMap.values()];
     console.log('[MAG] formCriteriaMap keys:', [...formCriteriaMap.keys()],
