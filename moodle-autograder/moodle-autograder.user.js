@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.39
+// @version      2.5.40
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3292,10 +3292,16 @@ Check: same variable names, identical code logic, same written arguments, same p
         document.getElementById(`mag-status-${student.uid}`).textContent = '✓ Posted';
         document.getElementById(`mag-status-${student.uid}`).className   = 'mag-card-status done';
         document.getElementById(`mag-card-${student.uid}`).style.opacity = '0.7';
-        applyResultToLiveDom(rubric, editedResult);
-        // Re-apply 2 s later in case Moodle's AMD re-rendered the panel (e.g. after
-        // detecting the grade save), which would otherwise revert our DOM changes.
-        setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
+        // In auto-grade mode we navigate away immediately after posting, so
+        // applyResultToLiveDom would run on the next student's page — clicking their
+        // rubric cells and writing their feedback editor with the wrong content.
+        // Skip it entirely in auto-grade mode; the server-saved grade is the source
+        // of truth and Moodle will re-render correctly when the panel reloads.
+        if (!isAutoGrading()) {
+          applyResultToLiveDom(rubric, editedResult);
+          // Re-apply after 2 s in case Moodle's AMD re-rendered the panel
+          setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
+        }
 
         // Auto-grade modes: navigate without showing interaction buttons
         if (isAutoGrading()) {
