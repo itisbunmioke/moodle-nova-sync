@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.46
+// @version      2.5.47
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3307,18 +3307,27 @@ Check: same variable names, identical code logic, same written arguments, same p
         if (isAutoPost) {
           applyResultToLiveDom(rubric, editedResult, { immediate: true });
           await sleep(400); // let AMD register cell selections before saveandshownext reads state
-          const sn = /** @type {HTMLElement|null} */(document.querySelector(
-            'button[name="saveandshownext"], input[name="saveandshownext"], ' +
-            '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
-            'button[name="saveandnext"], input[name="saveandnext"]'
-          ));
-          if (sn) {
-            sn.click();
-          } else {
-            const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
-            if (mn) mn.click();
-            else document.getElementById('mag-next-btn')?.click();
+          // Guard: if Moodle has "auto-advance after rubric" enabled, clicking the final
+          // rubric cell already saved the grade AND navigated to the next student. In that
+          // case clicking saveandshownext would fire on the *next* student's page, saving
+          // their blank form and kicking off an uncontrolled cascade.
+          // Only click if we are still on this student's page.
+          if (getMoodleUid() === student.uid) {
+            const sn = /** @type {HTMLElement|null} */(document.querySelector(
+              'button[name="saveandshownext"], input[name="saveandshownext"], ' +
+              '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
+              'button[name="saveandnext"], input[name="saveandnext"]'
+            ));
+            if (sn) {
+              sn.click();
+            } else {
+              const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
+              if (mn) mn.click();
+              else document.getElementById('mag-next-btn')?.click();
+            }
           }
+          // If getMoodleUid() !== student.uid: AMD auto-saved + advanced already;
+          // navWatcher is handling (or will handle) the next student.
           if (progFill) { progFill.classList.add('mag-complete'); progFill.style.width = '100%'; }
           setStatus('Grade posted ✓', '#40c080');
           document.getElementById(`mag-status-${student.uid}`).textContent = '✓ Posted';
