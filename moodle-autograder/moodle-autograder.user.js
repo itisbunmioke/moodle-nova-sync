@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.37
+// @version      2.5.38
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2131,14 +2131,23 @@ Check: same variable names, identical code logic, same written arguments, same p
     #mag-review-overlay.open { display: block; }
     #mag-review-box {
       background: #0e0020; border: 1px solid #7b2fff;
-      border-radius: 14px 14px 4px 14px; /* flat bottom-right so resize grip is visible */
+      border-radius: 14px;
       width: 820px; height: 75vh; min-width: 380px; min-height: 260px;
       color: #f0e8ff; font-family: sans-serif;
       box-shadow: 0 20px 60px rgba(0,0,0,0.8);
       position: absolute; top: 54px; left: 50%; transform: translateX(-50%);
       display: flex; flex-direction: column;
-      resize: both; overflow: auto;
+      overflow: hidden;
     }
+    .mag-panel-resize-grip {
+      position: absolute; width: 14px; height: 14px; z-index: 10;
+      background: rgba(123,47,255,0.5); opacity: 0; transition: opacity 0.15s;
+    }
+    #mag-review-box:hover .mag-panel-resize-grip { opacity: 1; }
+    .mag-panel-resize-grip[data-c="nw"] { top:0;    left:0;    cursor:nw-resize; border-radius:0 0 6px 0; }
+    .mag-panel-resize-grip[data-c="ne"] { top:0;    right:0;   cursor:ne-resize; border-radius:0 0 0 6px; }
+    .mag-panel-resize-grip[data-c="sw"] { bottom:0; left:0;    cursor:sw-resize; border-radius:0 6px 0 0; }
+    .mag-panel-resize-grip[data-c="se"] { bottom:0; right:0;   cursor:se-resize; border-radius:6px 0 0 0; }
     .mag-review-header {
       background: linear-gradient(135deg, #2d0057, #5a0096);
       padding: 16px 22px; border-radius: 14px 14px 0 0;
@@ -2149,7 +2158,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     .mag-review-header h3 { margin: 0; font-size: 15px; flex: 1; }
     #mag-review-box.minimized .mag-review-body,
     #mag-review-box.minimized .mag-review-footer { display: none; }
-    #mag-review-box.minimized { height: auto !important; resize: none; min-height: 0 !important; }
+    #mag-review-box.minimized { height: auto !important; min-height: 0 !important; }
+    #mag-review-box.minimized .mag-panel-resize-grip { display: none; }
     .mag-review-body { padding: 20px 22px; overflow-y: auto; flex: 1; min-height: 0; }
     .mag-student-card {
       border: 1px solid #3a1060; border-radius: 10px;
@@ -3261,7 +3271,8 @@ Check: same variable names, identical code logic, same written arguments, same p
           ));
           if (sn) { sn.click(); return; }
           const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
-          if (mn) mn.click();
+          if (mn) { mn.click(); return; }
+          document.getElementById('mag-next-btn')?.click();
           return;
         }
 
@@ -3345,6 +3356,21 @@ Check: same variable names, identical code logic, same written arguments, same p
         postBtn.textContent = 'Retry Post';
         document.getElementById(`mag-status-${student.uid}`).textContent = `✗ ${err.message}`;
         document.getElementById(`mag-status-${student.uid}`).className   = 'mag-card-status error';
+        // In auto-grade mode, don't halt on a post error — skip this student after a pause
+        if (isAutoGrading()) {
+          if (gradeNRemaining > 0) gradeNRemaining--;
+          await sleep(1500);
+          const _sn = /** @type {HTMLElement|null} */(document.querySelector(
+            'button[name="saveandshownext"], input[name="saveandshownext"], ' +
+            '[data-action="save-and-next"], [data-action="save-and-show-next"]'
+          ));
+          if (_sn) { _sn.click(); return; }
+          const _mn = /** @type {HTMLElement|null} */(document.querySelector(
+            '[data-action="next-user"], [data-action="nextuser"]'
+          ));
+          if (_mn) { _mn.click(); return; }
+          document.getElementById('mag-next-btn')?.click();
+        }
       }
     };
 
@@ -3398,6 +3424,59 @@ Check: same variable names, identical code logic, same written arguments, same p
     `;
     reviewOverlay.appendChild(box);
     reviewOverlay.classList.add('open');
+
+    // ── Four-corner resize handles ────────────────────────────────────────────
+    for (const c of ['nw', 'ne', 'sw', 'se']) {
+      const grip = document.createElement('div');
+      grip.className  = 'mag-panel-resize-grip';
+      grip.dataset.c  = c;
+      box.appendChild(grip);
+      grip.addEventListener('mousedown', e => {
+        e.preventDefault();
+        e.stopPropagation(); // don't also start a drag
+        // Switch from transform-centering to explicit coordinates once
+        if (box.style.transform) {
+          const r = box.getBoundingClientRect();
+          box.style.transform = 'none';
+          box.style.left = r.left + 'px';
+          box.style.top  = r.top  + 'px';
+        }
+        const x0 = e.clientX, y0 = e.clientY;
+        const w0 = box.offsetWidth, h0 = box.offsetHeight;
+        const l0 = box.offsetLeft,  t0 = box.offsetTop;
+        const MIN_W = 380, MIN_H = 260;
+        const onMove = (/** @type {MouseEvent} */ ev) => {
+          const dx = ev.clientX - x0, dy = ev.clientY - y0;
+          if (c === 'se') {
+            box.style.width  = Math.max(MIN_W, w0 + dx) + 'px';
+            box.style.height = Math.max(MIN_H, h0 + dy) + 'px';
+          } else if (c === 'sw') {
+            const nw = Math.max(MIN_W, w0 - dx);
+            box.style.width  = nw + 'px';
+            box.style.left   = (l0 + w0 - nw) + 'px';
+            box.style.height = Math.max(MIN_H, h0 + dy) + 'px';
+          } else if (c === 'ne') {
+            box.style.width  = Math.max(MIN_W, w0 + dx) + 'px';
+            const nh = Math.max(MIN_H, h0 - dy);
+            box.style.height = nh + 'px';
+            box.style.top    = (t0 + h0 - nh) + 'px';
+          } else { // nw
+            const nw = Math.max(MIN_W, w0 - dx);
+            const nh = Math.max(MIN_H, h0 - dy);
+            box.style.width  = nw + 'px';
+            box.style.height = nh + 'px';
+            box.style.left   = (l0 + w0 - nw) + 'px';
+            box.style.top    = (t0 + h0 - nh) + 'px';
+          }
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }
 
     const cardsEl = document.getElementById('mag-review-cards');
     for (const student of students) {
@@ -3636,6 +3715,21 @@ Check: same variable names, identical code logic, same written arguments, same p
         results[student.uid] = { error: err.message };
         panel.updateCard(student, { error: err.message });
         setStatus(`Error grading ${student.name}: ${err.message}`, '#ff9060');
+        // In auto-grade mode, don't get stuck on an errored student — skip after a pause
+        if (isAutoGrading()) {
+          if (gradeNRemaining > 0) gradeNRemaining--;
+          await sleep(1500);
+          const _sn = /** @type {HTMLElement|null} */(document.querySelector(
+            'button[name="saveandshownext"], input[name="saveandshownext"], ' +
+            '[data-action="save-and-next"], [data-action="save-and-show-next"]'
+          ));
+          if (_sn) { _sn.click(); return; }
+          const _mn = /** @type {HTMLElement|null} */(document.querySelector(
+            '[data-action="next-user"], [data-action="nextuser"]'
+          ));
+          if (_mn) { _mn.click(); return; }
+          document.getElementById('mag-next-btn')?.click();
+        }
       }
     };
     activeGradeCurrentFn = gradeCurrentStudent; // expose so the toolbar button can re-trigger
@@ -3808,8 +3902,12 @@ Check: same variable names, identical code logic, same written arguments, same p
       try {
         const fetched = await fetchStudentFiles(student);
         // Abort if Moodle navigated to a different student while the XHR was in-flight.
-        const midUid = getMoodleUid();
-        if (midUid && midUid !== newUid) { lastWatchedUid = ''; return; }
+        // Do NOT reset lastWatchedUid to '' here — that would cause the navWatcher to
+        // re-trigger onMoodleNavigated for the old student in an endless loop.
+        // lastWatchedUid is already set to newUid, so the watcher will naturally detect
+        // midUid as a new value and trigger onMoodleNavigated(midUid) on its next tick.
+        const midUid = getMoodleUid() || new URL(location.href).searchParams.get('userid') || '';
+        if (midUid && midUid !== newUid) { return; }
         gradedInMoodle = fetched.isGraded;
         // Update name now so the card built below is correct immediately.
         if (fetched.realName && student.name !== fetched.realName) {
