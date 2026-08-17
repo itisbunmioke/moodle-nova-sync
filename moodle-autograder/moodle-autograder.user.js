@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.47
+// @version      2.5.48
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3312,7 +3312,10 @@ Check: same variable names, identical code logic, same written arguments, same p
           // case clicking saveandshownext would fire on the *next* student's page, saving
           // their blank form and kicking off an uncontrolled cascade.
           // Only click if we are still on this student's page.
-          if (getMoodleUid() === student.uid) {
+          const _nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
+            'select#change-user-select, select[data-action="change-user"]'
+          ))?.value?.trim() || '';
+          if (!_nowUid || _nowUid === student.uid) {
             const sn = /** @type {HTMLElement|null} */(document.querySelector(
               'button[name="saveandshownext"], input[name="saveandshownext"], ' +
               '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
@@ -3326,7 +3329,7 @@ Check: same variable names, identical code logic, same written arguments, same p
               else document.getElementById('mag-next-btn')?.click();
             }
           }
-          // If getMoodleUid() !== student.uid: AMD auto-saved + advanced already;
+          // If _nowUid !== student.uid: AMD auto-saved + advanced already;
           // navWatcher is handling (or will handle) the next student.
           if (progFill) { progFill.classList.add('mag-complete'); progFill.style.width = '100%'; }
           setStatus('Grade posted ✓', '#40c080');
