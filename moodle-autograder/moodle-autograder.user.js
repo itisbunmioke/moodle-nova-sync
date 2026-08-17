@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.40
+// @version      2.5.41
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3303,16 +3303,20 @@ Check: same variable names, identical code logic, same written arguments, same p
           setTimeout(() => applyResultToLiveDom(rubric, editedResult), 2000);
         }
 
-        // Auto-grade modes: navigate without showing interaction buttons
+        // Auto-grade modes: navigate without showing interaction buttons.
+        // postGrade() already saved the AI grade via AJAX; using saveandshownext here
+        // would re-submit the live Moodle form (which still holds the old grade data,
+        // since applyResultToLiveDom is skipped in auto mode), overwriting the save.
+        // Use next-user (navigate only, no form submit) to avoid that overwrite.
         if (isAutoGrading()) {
+          const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
+          if (mn) { mn.click(); return; }
           const sn = /** @type {HTMLElement|null} */(document.querySelector(
             'button[name="saveandshownext"], input[name="saveandshownext"], ' +
             '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
             'button[name="saveandnext"], input[name="saveandnext"]'
           ));
           if (sn) { sn.click(); return; }
-          const mn = /** @type {HTMLElement|null} */(document.querySelector('[data-action="next-user"], [data-action="nextuser"]'));
-          if (mn) { mn.click(); return; }
           document.getElementById('mag-next-btn')?.click();
           return;
         }
@@ -3745,6 +3749,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         }
         if (isAutoGrading()) {
           if (gradeNRemaining > 0) gradeNRemaining--;
+          autoSkipCount = 0; // a real grade was posted — reset the cycle-detection counter
           setStatus(`${student.name} graded — auto-posting…`, '#c9a0ff');
           await sleep(300);
           const pb = /** @type {HTMLButtonElement|null} */(document.getElementById(`mag-post-${student.uid}`));
@@ -3841,8 +3846,9 @@ Check: same variable names, identical code logic, same written arguments, same p
         stopBtn.style.cssText = 'background:#6a1010;border-color:#a03030;margin-left:4px';
         stopBtn.textContent = '⬛ Stop Auto';
         stopBtn.onclick = () => {
-          gradeAllActive = false;
+          gradeAllActive  = false;
           gradeNRemaining = 0;
+          autoSkipCount   = 0;
           stopBtn.remove();
           setStatus('Auto-grading stopped.', '#9070c0');
         };
@@ -3905,6 +3911,20 @@ Check: same variable names, identical code logic, same written arguments, same p
 
       // Helper: navigate to next student (used by Grade All skip logic)
       const autoAdvance = async () => {
+        autoSkipCount++;
+        // If we've looped through every student without grading a new one, no more
+        // ungraded submissions exist — stop auto-grading cleanly instead of cycling.
+        const selEl = document.querySelector('select#change-user-select, select[data-action="change-user"]');
+        const totalStudents = selEl
+          ? [.../** @type {HTMLSelectElement} */(selEl).options].filter(o => /^\d+$/.test(o.value?.trim())).length
+          : 0;
+        if (totalStudents > 0 && autoSkipCount >= totalStudents) {
+          gradeAllActive  = false;
+          gradeNRemaining = 0;
+          autoSkipCount   = 0;
+          setStatus('All available submissions have been graded.', '#40c080');
+          return;
+        }
         await sleep(600);
         const sn = /** @type {HTMLElement|null} */(document.querySelector(
           'button[name="saveandshownext"], input[name="saveandshownext"], ' +
@@ -4022,6 +4042,7 @@ Check: same variable names, identical code logic, same written arguments, same p
   let activeGradeCurrentFn = /** @type {(()=>Promise<void>)|null} */ (null);
   let gradeAllActive  = false; // set true by "Grade All" — triggers auto-post and auto-advance
   let gradeNRemaining = 0;    // set to N by "Grade N" — decrements after each auto-post; stops at 0
+  let autoSkipCount   = 0;    // consecutive auto-advances without grading; stops cycling when ≥ totalStudents
   const isAutoGrading = () => gradeAllActive || gradeNRemaining > 0;
 
   // Plagiarism cache persists across panel close/reopen AND page refreshes (same tab).
