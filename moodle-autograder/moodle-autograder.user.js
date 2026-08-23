@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.49
+// @version      2.5.50
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1609,6 +1609,50 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     }).join('').trim();
   }
 
+  // ── Feedback / score consistency guard ─────────────────────────────────────
+  // The prompt instructs the AI never to reference a deduction that didn't happen
+  // (see SCORE–FEEDBACK CONSISTENCY / DEDUCTION COVERAGE rules in buildCombinedPrompt),
+  // but that's a request, not a guarantee — LLMs still sometimes write feedback like
+  // "only got 4/4 instead of full points" for a criterion that scored max. This is a
+  // deterministic backstop that catches that failure mode instead of trusting the prompt.
+  const DEDUCTION_CUES = /\b(only (got|received|earned|scored)|instead of( the)? full|didn'?t (get|earn|receive) full|not full (points|marks|credit)|lost \d|deducted|docked)\b/i;
+
+  function splitSentences(/** @type {string} */ text) {
+    return (text.match(/[^.!?]+[.!?]*/g) || [text]).map(s => s.trim()).filter(Boolean);
+  }
+
+  function sanitizeFeedback(/** @type {any[]} */ scores, /** @type {any[]} */ rubric, /** @type {string} */ feedback) {
+    if (!feedback) return feedback;
+
+    const maxPoints = (rubric || []).map((/** @type {any} */ c) =>
+      c.levels?.length ? Math.max(...c.levels.map((/** @type {any} */ l) => l.points)) : null);
+    const allAtMax = (scores || []).length > 0 && (scores || []).every((/** @type {any} */ s) => {
+      const max = maxPoints[s.criterionIndex];
+      return max == null || s.pointsAwarded >= max;
+    });
+
+    const kept = splitSentences(feedback).filter(sentence => {
+      // Self-contradictory on its face: a fraction "X/Y" where X === Y (already full
+      // marks) paired with language implying it wasn't full marks — wrong regardless
+      // of what the actual rubric scores say.
+      const fractionMatch = sentence.match(/\b(\d+)\s*\/\s*(\d+)\b/);
+      if (fractionMatch && fractionMatch[1] === fractionMatch[2] && DEDUCTION_CUES.test(sentence)) {
+        console.warn('[MAG] Dropped self-contradictory feedback sentence (full-marks fraction described as a deduction):', sentence);
+        return false;
+      }
+      // Every criterion actually scored max, but this sentence still reads like a deduction.
+      if (allAtMax && DEDUCTION_CUES.test(sentence)) {
+        console.warn('[MAG] Dropped feedback sentence (all criteria scored max, but sentence implies a deduction):', sentence);
+        return false;
+      }
+      return true;
+    });
+
+    const result = kept.join(' ').trim();
+    if (!result && feedback) console.warn('[MAG] Feedback fully dropped by consistency guard. Original:', feedback);
+    return result;
+  }
+
   async function gradeSubmission(/** @type {string} */ title, /** @type {string} */ instructions, /** @type {any[]} */ rubric, /** @type {string} */ submissionText, /** @type {any} */ inlineData, /** @type {string[]} */ submittedFiles = []) {
     const sub            = truncateSubmission(submissionText);
     const combinedPrompt = buildCombinedPrompt(title, instructions, rubric, sub, CFG.instructorName, CFG.instructorStyle, submittedFiles);
@@ -1654,7 +1698,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
         scores:         grading.scores,
         totalPoints:    grading.totalPoints,
         overallComment: grading.overallComment,
-        feedback:       splitFeedback || grading.overallComment || '',
+        feedback:       sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''),
       };
     }
 
@@ -1678,6 +1722,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       feedback = (await callClaude(feedPrompt)).trim();
     }
     if (!feedback) feedback = grading.overallComment || '';
+    feedback = sanitizeFeedback(grading.scores, rubric, feedback);
 
     return { scores: grading.scores, totalPoints: grading.totalPoints, overallComment: grading.overallComment, feedback };
   }
