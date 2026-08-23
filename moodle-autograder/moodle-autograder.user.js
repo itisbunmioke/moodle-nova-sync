@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.50
+// @version      2.5.51
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -118,9 +118,7 @@
     for (const score of result.scores || []) {
       const criterion = rubric[score.criterionIndex];
       if (!criterion) continue;
-      const matchedLevel = criterion.levels.find((/** @type {any} */ l) => l.points === score.pointsAwarded)
-                        || criterion.levels.reduce((/** @type {any} */ a, /** @type {any} */ b) =>
-                            Math.abs(b.points - score.pointsAwarded) < Math.abs(a.points - score.pointsAwarded) ? b : a);
+      const matchedLevel = matchRubricLevel(criterion, score.pointsAwarded);
       if (!matchedLevel?.id) { rowMap.set(score.criterionIndex, { row: null, cid: criterion?.criterionId || null }); continue; }
 
       const cell = /** @type {HTMLElement|null} */(
@@ -1609,6 +1607,38 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     }).join('').trim();
   }
 
+  // Find the rubric level whose points value best matches an AI-reported score:
+  // exact match if one exists, otherwise the closest defined level.
+  function matchRubricLevel(/** @type {any} */ criterion, /** @type {number} */ pointsAwarded) {
+    if (!criterion?.levels?.length) return null;
+    return criterion.levels.find((/** @type {any} */ l) => l.points === pointsAwarded)
+        || criterion.levels.reduce((/** @type {any} */ a, /** @type {any} */ b) =>
+             Math.abs(b.points - pointsAwarded) < Math.abs(a.points - pointsAwarded) ? b : a);
+  }
+
+  // ── Score validation guard ──────────────────────────────────────────────────
+  // The prompt tells the AI pointsAwarded must exactly match one of a criterion's
+  // rubric level values, but it occasionally returns an out-of-range or off-level
+  // number instead (e.g. 15 for a criterion whose levels top out at 10). postGrade
+  // and applyResultToLiveDom already snap to the nearest real level before writing
+  // to Moodle, so posted grades stay capped — but left uncorrected here, the raw
+  // value still inflates the review panel's "X / 100" total and grading.totalPoints,
+  // which is how a display of "110 / 100" shows up despite Moodle only ever posting
+  // a valid, capped score. Snap immediately after parsing so display and posting
+  // always agree on the same numbers.
+  function clampScoresToRubric(/** @type {any[]} */ scores, /** @type {any[]} */ rubric) {
+    for (const score of scores || []) {
+      const criterion = (rubric || [])[score.criterionIndex];
+      const level = matchRubricLevel(criterion, score.pointsAwarded);
+      if (level && level.points !== score.pointsAwarded) {
+        console.warn('[MAG] Clamped out-of-range score for criterion', score.criterionIndex,
+          '— AI returned', score.pointsAwarded, '→ snapped to nearest valid level', level.points);
+        score.pointsAwarded = level.points;
+      }
+    }
+    return scores;
+  }
+
   // ── Feedback / score consistency guard ─────────────────────────────────────
   // The prompt instructs the AI never to reference a deduction that didn't happen
   // (see SCORE–FEEDBACK CONSISTENCY / DEDUCTION COVERAGE rules in buildCombinedPrompt),
@@ -1686,6 +1716,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       if (!Array.isArray(grading?.scores)) {
         throw new Error(`AI response missing scores array. Raw: ${scoringRaw.slice(0, 200)}`);
       }
+      clampScoresToRubric(grading.scores, rubric);
       grading.totalPoints = grading.scores.reduce((/** @type {number} */ s, /** @type {any} */ sc) => s + (sc.pointsAwarded || 0), 0);
 
       // Feedback call — buildFeedbackPrompt already has feedback rules and submission
@@ -1713,6 +1744,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     if (!Array.isArray(grading?.scores)) {
       throw new Error(`AI response missing scores array. Raw: ${combinedRaw.slice(0, 200)}`);
     }
+    clampScoresToRubric(grading.scores, rubric);
     grading.totalPoints = grading.scores.reduce((/** @type {number} */ s, /** @type {any} */ sc) => s + (sc.pointsAwarded || 0), 0);
 
     const useClaude = CFG.useClaudeForFeedback && CFG.claudeKey;
@@ -1817,9 +1849,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     for (const score of result.scores || []) {
       const criterion = rubric[score.criterionIndex];
       if (!criterion) continue;
-      const matchedLevel = criterion.levels.find((/** @type {any} */ l) => l.points === score.pointsAwarded)
-                        || criterion.levels.reduce((/** @type {any} */ a, /** @type {any} */ b) =>
-                            Math.abs(b.points - score.pointsAwarded) < Math.abs(a.points - score.pointsAwarded) ? b : a);
+      const matchedLevel = matchRubricLevel(criterion, score.pointsAwarded);
       if (!matchedLevel?.id) continue;
       const prefix = (criterion.criterionId && formCriteriaMap.get(criterion.criterionId))
                   || (criterion.criterionId && `advancedgrading[criteria][${criterion.criterionId}]`)
