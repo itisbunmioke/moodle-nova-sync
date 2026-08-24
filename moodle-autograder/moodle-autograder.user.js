@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.53
+// @version      2.5.54
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -955,20 +955,25 @@ ${submissionText || '[No text submission — file submitted for analysis]'}
 Respond ONLY with valid JSON in this exact shape (no markdown, no explanation outside the JSON):
 {
   "scores": [
-    { "criterionIndex": 0, "pointsAwarded": <number>, "justification": "<one sentence why>" }
+    { "criterionIndex": 0, "pointsAwarded": <number>, "justification": "<one sentence why>", "evidence": "<a short phrase copied verbatim, character-for-character, from the STUDENT SUBMISSION text above that backs this justification>" }
   ],
   "totalPoints": <number>,
   "overallComment": "<2-3 sentence overall assessment>",
-  "feedback": "<one short paragraph of student-facing comment following all FEEDBACK RULES below, OR an empty string \"\" — NEVER a thinking process, reasoning steps, or decision narration>"
+  "feedback": [
+    { "text": "<one sentence of the student-facing comment, following all FEEDBACK RULES below>", "evidence": "<a short phrase copied verbatim, character-for-character, from the STUDENT SUBMISSION text above that backs this sentence, OR \"\" ONLY if this sentence is a pure transition/non-factual remark that names nothing specific>" }
+  ]
 }
+"feedback" may be an empty array [] — see BLANK FEEDBACK below.
 
-CRITICAL — "feedback" field is student-facing text ONLY. It must never contain phrases like "Here's a thinking process:", "Let me analyze", "Step 1:", numbered reasoning lists, or any narration about how you are grading. If you catch yourself writing any of those, delete the entire field value and start again with only the student comment.
+CRITICAL — every "text" value in "feedback" is student-facing content ONLY. It must never contain phrases like "Here's a thinking process:", "Let me analyze", "Step 1:", numbered reasoning lists, or any narration about how you are grading. If you catch yourself writing any of those, delete that entry and start again with only the student comment.
+
+EVIDENCE GROUNDING (applies to every "evidence" field, in both "scores" and "feedback"): an "evidence" value must be an exact quote — the same words, in the same order — copied directly from the STUDENT SUBMISSION text above. Never paraphrase, summarise, reconstruct from memory, or invent a quote that merely sounds plausible. If you cannot produce a real quote to support a specific claim, do not make that claim — write something more general instead, and set "evidence" to "". Every "evidence" value you do provide will be checked against the submission text verbatim; a quote that isn't found there gets that entire justification or sentence discarded before the student or instructor sees it.
 
 — SCORING RULES —
 - pointsAwarded must exactly match one of the point values listed in that criterion's levels.
 - criterionIndex is 0-based, matching the rubric order above.
 - Before scoring each criterion, re-read the INSTRUCTIONS above (including any "Deliverables", "Required Files", or "Submission Requirements" section). Score based on whether those specific requirements are met, not on generic quality.
-- EVIDENCE REQUIREMENT: Every justification must name the specific thing that earned or lost the points — a function name, line logic, PDF section heading, slide number, column name, formula. Generic justifications like "the student addressed this" or "the code handles this" are not acceptable. If you cannot name specific evidence, you cannot award credit.
+- EVIDENCE REQUIREMENT: Every justification must name the specific thing that earned or lost the points — a function name, line logic, PDF section heading, slide number, column name, formula. Generic justifications like "the student addressed this" or "the code handles this" are not acceptable. If you cannot name specific evidence, you cannot award credit. Back the claim with the "evidence" field — see EVIDENCE GROUNDING above.
 - ABSENCE CLAIMS REQUIRE EXHAUSTIVE VERIFICATION: Before writing that any topic, section, slide, function, analysis, or requirement is "missing", "absent", "not included", "not present", or "not addressed", you must have read every visible portion of that file. The submission may contain "[…content omitted…]" markers where text was cut to fit the context window — you have NOT read what is in those gaps. You cannot claim absence for any topic that could plausibly appear in an omitted section. Making a false absence claim (saying something is missing when it is present) is a grading error as serious as falsely awarding credit. When uncertain whether something is present in an omitted portion, do not penalise.
 - TERMINOLOGY AND CONTEXT: Students may address a requirement using different words, headings, or structure than the rubric expects. Before concluding a requirement is absent, check whether the concept appears under alternative terminology, a different section heading, or phrasing the rubric did not anticipate. A requirement is absent only when you have confirmed — across the entire visible submission — that neither the concept nor any equivalent expression of it appears anywhere.
 - When uncertain between two adjacent levels, always choose the higher one. The default direction is credit, not deduction.
@@ -997,7 +1002,7 @@ ${!hasPresentation && (instructions.toLowerCase().includes('.pptx') || instructi
 
 — FEEDBACK RULES (for the "feedback" field) —
 You are ${instructorName || 'the instructor'}, leaving a quick grade comment. Style: ${style || 'conversational'}.
-One short paragraph. Typed fast. No ceremony, no structure for structure's sake.
+"feedback" is an array of { text, evidence } objects. Concatenating the "text" values in order (joined with spaces) must read as one short paragraph, typed fast, no ceremony, no structure for structure's sake — but each array entry should be roughly one sentence, so the evidence-grounding check can verify it individually.
 Write as if you have just finished scoring this submission — the rubric scores you assigned above are the ones to reference.
 
 PICK ONE writing mode that fits this submission. Do not name or signal which one you chose:
@@ -1055,7 +1060,7 @@ a different student's work without changing a word, rewrite it.
 DEDUCTION COVERAGE (mandatory — highest priority rule in this section):
 For every criterion where you awarded fewer than the maximum points, the feedback MUST include a specific explanation of what was missing, incomplete, or incorrect for that criterion. This is non-negotiable. Do not let any deduction go unmentioned. If multiple criteria were below max, address each one. Reference the actual gap in the work (a missing function, a wrong column, an absent slide, an incomplete analysis), not just "could be improved".
 
-BLANK FEEDBACK: If the student received maximum points on every single criterion AND you have no specific, verifiable technical observation to add, set "feedback" to an empty string "". A blank comment is far better than generic praise, filler, or restating what the rubric scores already communicate. Feedback is not mandatory — write it only when you have something submission-specific and useful to say. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
+BLANK FEEDBACK: If the student received maximum points on every single criterion AND you have no specific, verifiable technical observation to add, set "feedback" to an empty array []. A blank comment is far better than generic praise, filler, or restating what the rubric scores already communicate. Feedback is not mandatory — write it only when you have something submission-specific and useful to say. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
 
 VERIFY BEFORE WRITING: Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, dataset column, or section title — locate it in the submission text above. If you cannot find it there, do not name it; use general terms instead. Before saying something is "missing" or "absent" in feedback, scan the full visible submission from start to end. If the topic could plausibly be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
 
@@ -1083,7 +1088,15 @@ FORBIDDEN in "feedback":
       `${rubric[i]?.name || 'Criterion ' + i}: ${s.pointsAwarded} pts — ${s.justification}`
     ).join('\n');
     return `You are ${instructorName}, leaving a quick grade comment. Style: ${style}.
-One short paragraph. Typed fast. No ceremony, no structure for structure's sake.
+Respond ONLY with valid JSON in this exact shape (no markdown, no explanation outside the JSON):
+{
+  "feedback": [
+    { "text": "<one sentence of the comment>", "evidence": "<a short phrase copied verbatim, character-for-character, from the STUDENT SUBMISSION text below that backs this sentence, OR \"\" ONLY if this sentence is a pure transition/non-factual remark that names nothing specific>" }
+  ]
+}
+Concatenating the "text" values in order (joined with spaces) must read as one short paragraph, typed fast, no ceremony, no structure for structure's sake — but each array entry should be roughly one sentence, so the evidence-grounding check can verify it individually. "feedback" may be an empty array [] — see BLANK FEEDBACK below.
+
+EVIDENCE GROUNDING: an "evidence" value must be an exact quote — the same words, in the same order — copied directly from the STUDENT SUBMISSION text below. Never paraphrase, summarise, reconstruct from memory, or invent a quote that merely sounds plausible. If you cannot produce a real quote to support a specific claim, do not make that claim — write something more general instead, and set "evidence" to "". Every "evidence" value you do provide will be checked against the submission text verbatim; a quote that isn't found there gets that sentence discarded before the student sees it.
 
 ASSIGNMENT: ${title}
 INSTRUCTIONS: ${instructions}
@@ -1151,7 +1164,7 @@ a different student's work without changing a word, rewrite it.
 For every criterion in SCORES where the student received fewer than the maximum points, the feedback MUST include a specific explanation of what was missing, incomplete, or incorrect. Do not let any deduction pass without addressing it. Reference the actual gap (a missing function, wrong column, absent slide, incomplete analysis), not just "could be improved".
 
 — BLANK FEEDBACK —
-If the student received maximum points on every criterion AND you have no specific, verifiable technical observation to add, return an empty string "". Feedback is not mandatory. A blank is better than generic praise or restating the rubric scores. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
+If the student received maximum points on every criterion AND you have no specific, verifiable technical observation to add, set "feedback" to an empty array []. Feedback is not mandatory. A blank is better than generic praise or restating the rubric scores. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
 
 — VERIFY BEFORE WRITING —
 Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
@@ -1174,7 +1187,7 @@ NUMBERS MUST BE EXACT: Before stating any specific count — rows sampled, colum
 - Never mention resubmitting, resubmission, submitting again, revising and resubmitting, or any other suggestion that this work could be redone or the grade isn't final. The grade is final — critique the work as it stands, but never imply there's a path to change it.
 
 — OUTPUT —
-Your response is the feedback text itself, and nothing else. Do not explain your reasoning. Do not narrate what you are deciding or checking. Do not write about the rules, the criteria, or what you should or should not include. If you notice yourself writing anything other than the actual feedback paragraph (or an empty string ""), stop and delete it. Output ONLY the final result.`;
+Your response is the JSON object described above, and nothing else. Do not explain your reasoning. Do not narrate what you are deciding or checking. Do not write about the rules, the criteria, or what you should or should not include. No markdown fences, no prose before or after the JSON. If you notice yourself writing anything other than the JSON object (or "feedback": []), stop and delete it. Output ONLY the final JSON.`;
   }
 
   // ── AI callers ───────────────────────────────────────────────────────────
@@ -1622,6 +1635,68 @@ Your response is the feedback text itself, and nothing else. Do not explain your
              Math.abs(b.points - pointsAwarded) < Math.abs(a.points - pointsAwarded) ? b : a);
   }
 
+  // ── Evidence grounding guard ─────────────────────────────────────────────────
+  // The AI is asked to attach an "evidence" field to every justification and
+  // feedback sentence: a quote copied verbatim from the submission. That's the
+  // structural fix for hallucination generally — rather than growing an ever-longer
+  // list of regexes for each new way the AI can state something false (deduction
+  // language, wrong point fractions, fabricated counts — see the guards below),
+  // every factual claim now has to point at a real quote, and we mechanically
+  // check that quote actually exists in what the AI was given to read. A claim
+  // whose evidence doesn't check out gets discarded before it reaches a student
+  // or an instructor's review panel.
+  function normalizeForMatch(/** @type {string} */ text) {
+    return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  // Evidence shorter than this is too generic to prove anything (a single common
+  // word will trivially "match" almost any submission) — treat it as unverified.
+  const MIN_EVIDENCE_LENGTH = 8;
+
+  function isEvidenceGrounded(/** @type {string} */ evidence, /** @type {string} */ normalizedSubmission) {
+    const normEvidence = normalizeForMatch(evidence);
+    return normEvidence.length >= MIN_EVIDENCE_LENGTH && normalizedSubmission.includes(normEvidence);
+  }
+
+  // scores: array of { criterionIndex, pointsAwarded, justification, evidence }.
+  // Blanks out any justification whose evidence is missing or unverifiable, rather
+  // than let an ungrounded claim reach the rubric remark box or the review panel.
+  function groundJustifications(/** @type {any[]} */ scores, /** @type {string} */ submissionText) {
+    const normSub = normalizeForMatch(submissionText);
+    for (const score of scores || []) {
+      if (!score.justification) continue;
+      if (!isEvidenceGrounded(score.evidence, normSub)) {
+        console.warn('[MAG] Blanked justification for criterion', score.criterionIndex,
+          '(evidence quote missing or not found verbatim in submission):', score.justification,
+          '| claimed evidence:', score.evidence);
+        score.justification = '';
+      }
+    }
+    return scores;
+  }
+
+  // items: array of { text, evidence } sentence objects from the feedback prompt.
+  // Keeps a sentence only if its evidence is a real quote from the submission, OR
+  // the sentence explicitly claimed no evidence is needed (a pure transition) —
+  // that second case still passes through sanitizeFeedback/verifyNumericClaims
+  // afterward, so an evidence-free sentence smuggling in a number or deduction
+  // claim is still caught.
+  function groundFeedback(/** @type {any[]} */ items, /** @type {string} */ submissionText) {
+    const normSub = normalizeForMatch(submissionText);
+    const kept = [];
+    for (const item of items || []) {
+      const text = (item?.text || '').trim();
+      if (!text) continue;
+      const evidence = (item?.evidence || '').trim();
+      if (evidence && !isEvidenceGrounded(evidence, normSub)) {
+        console.warn('[MAG] Dropped feedback sentence (evidence quote not found verbatim in submission):', text, '| claimed evidence:', evidence);
+        continue;
+      }
+      kept.push(text);
+    }
+    return kept.join(' ').trim();
+  }
+
   // ── Score validation guard ──────────────────────────────────────────────────
   // The prompt tells the AI pointsAwarded must exactly match one of a criterion's
   // rubric level values, but it occasionally returns an out-of-range or off-level
@@ -1720,6 +1795,19 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     return result;
   }
 
+  // buildFeedbackPrompt now asks for { "feedback": [{text, evidence}, ...] } JSON — call the
+  // AI, parse that shape, and ground it. Falls back to raw text (no evidence grounding
+  // possible) if the model doesn't return the expected JSON, rather than losing the response.
+  async function generateGroundedFeedback(/** @type {string} */ feedPrompt, /** @type {boolean} */ useClaude, /** @type {string} */ submissionText) {
+    const raw = useClaude ? (await callClaude(feedPrompt)).trim() : (await callAI(feedPrompt, null)).trim();
+    try {
+      const parsed = parseGradingJSON(raw);
+      if (Array.isArray(parsed?.feedback)) return groundFeedback(parsed.feedback, submissionText);
+    } catch {}
+    console.warn('[MAG] Feedback response was not the expected JSON shape — using raw text without evidence grounding:', raw.slice(0, 200));
+    return stripThinking(raw);
+  }
+
   async function gradeSubmission(/** @type {string} */ title, /** @type {string} */ instructions, /** @type {any[]} */ rubric, /** @type {string} */ submissionText, /** @type {any} */ inlineData, /** @type {string[]} */ submittedFiles = []) {
     const sub            = truncateSubmission(submissionText);
     const combinedPrompt = buildCombinedPrompt(title, instructions, rubric, sub, CFG.instructorName, CFG.instructorStyle, submittedFiles);
@@ -1740,8 +1828,9 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       // Build scoring-only prompt: strip the "feedback" JSON field and everything
       // from "— FEEDBACK RULES" onward. Scoring rules + submission still intact.
       const scoringPrompt = combinedPrompt
-        .replace(/,?\s*\n\s*"feedback":[^\n]+/, '')        // remove feedback field from format
-        .replace(/\n— FEEDBACK RULES[\s\S]*$/, '');        // drop feedback rules section
+        .replace(/,?\s*\n\s*"feedback":\s*\[[\s\S]*?\]/, '')          // remove feedback field from format (multi-line array)
+        .replace(/\n"feedback" may be an empty array[^\n]*\n?/, '')   // drop now-dangling note about that field
+        .replace(/\n— FEEDBACK RULES[\s\S]*$/, '');                   // drop feedback rules section
 
       const scoringRaw = await callAI(scoringPrompt, inlineData);
       try { grading = parseGradingJSON(scoringRaw); } catch (e) {
@@ -1754,13 +1843,12 @@ Your response is the feedback text itself, and nothing else. Do not explain your
         throw new Error(`AI response missing scores array. Raw: ${scoringRaw.slice(0, 200)}`);
       }
       clampScoresToRubric(grading.scores, rubric);
+      groundJustifications(grading.scores, sub);
       grading.totalPoints = grading.scores.reduce((/** @type {number} */ s, /** @type {any} */ sc) => s + (sc.pointsAwarded || 0), 0);
 
       // Feedback call — buildFeedbackPrompt already has feedback rules and submission
       const feedPrompt = buildFeedbackPrompt(title, instructions, rubric, sub, grading.scores, CFG.instructorName, CFG.instructorStyle);
-      const splitFeedback = CFG.useClaudeForFeedback && CFG.claudeKey
-        ? (await callClaude(feedPrompt)).trim()
-        : stripThinking((await callAI(feedPrompt, null)).trim());
+      const splitFeedback = await generateGroundedFeedback(feedPrompt, CFG.useClaudeForFeedback && CFG.claudeKey, sub);
 
       return {
         scores:         grading.scores,
@@ -1782,13 +1870,16 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       throw new Error(`AI response missing scores array. Raw: ${combinedRaw.slice(0, 200)}`);
     }
     clampScoresToRubric(grading.scores, rubric);
+    groundJustifications(grading.scores, sub);
     grading.totalPoints = grading.scores.reduce((/** @type {number} */ s, /** @type {any} */ sc) => s + (sc.pointsAwarded || 0), 0);
 
     const useClaude = CFG.useClaudeForFeedback && CFG.claudeKey;
-    let feedback = typeof grading.feedback === 'string' ? stripThinking(grading.feedback.trim()) : '';
+    let feedback = Array.isArray(grading.feedback)
+      ? groundFeedback(grading.feedback, sub)
+      : (typeof grading.feedback === 'string' ? stripThinking(grading.feedback.trim()) : '');
     if (useClaude) {
       const feedPrompt = buildFeedbackPrompt(title, instructions, rubric, sub, grading.scores, CFG.instructorName, CFG.instructorStyle);
-      feedback = (await callClaude(feedPrompt)).trim();
+      feedback = await generateGroundedFeedback(feedPrompt, true, sub);
     }
     if (!feedback) feedback = grading.overallComment || '';
     feedback = verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, feedback), sub);
