@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.55
+// @version      2.5.56
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -955,7 +955,7 @@ ${submissionText || '[No text submission — file submitted for analysis]'}
 Respond ONLY with valid JSON in this exact shape (no markdown, no explanation outside the JSON):
 {
   "scores": [
-    { "criterionIndex": 0, "pointsAwarded": <number>, "justification": "<one sentence why>", "evidence": "<a short phrase copied verbatim, character-for-character, from the STUDENT SUBMISSION text above that backs this justification>" }
+    { "criterionIndex": 0, "pointsAwarded": <number>, "justification": "<one sentence why>", "evidence": "<a short phrase copied verbatim, character-for-character, from the STUDENT SUBMISSION text above that backs this justification, OR \"\" if none applies>" }
   ],
   "totalPoints": <number>,
   "overallComment": "<2-3 sentence overall assessment>",
@@ -1659,15 +1659,20 @@ Your response is the JSON object described above, and nothing else. Do not expla
   }
 
   // scores: array of { criterionIndex, pointsAwarded, justification, evidence }.
-  // Blanks out any justification whose evidence is missing or unverifiable, rather
-  // than let an ungrounded claim reach the rubric remark box or the review panel.
+  // Blanks a justification only when evidence was actually PROVIDED but doesn't check
+  // out — that's a real hallucinated claim. Leaves the justification alone when evidence
+  // is simply absent (the AI didn't fill the field): with the current model cascade that's
+  // common enough that blanking on absence alone wiped out the whole column, which is a
+  // worse outcome than an occasional ungrounded justification slipping through. Same
+  // trade-off groundFeedback already makes for evidence-free sentences.
   function groundJustifications(/** @type {any[]} */ scores, /** @type {string} */ submissionText) {
     const normSub = normalizeForMatch(submissionText);
     for (const score of scores || []) {
       if (!score.justification) continue;
-      if (!isEvidenceGrounded(score.evidence, normSub)) {
+      const evidence = (score.evidence || '').trim();
+      if (evidence && !isEvidenceGrounded(evidence, normSub)) {
         console.warn('[MAG] Blanked justification for criterion', score.criterionIndex,
-          '(evidence quote missing or not found verbatim in submission):', score.justification,
+          '(evidence quote provided but not found verbatim in submission):', score.justification,
           '| claimed evidence:', score.evidence);
         score.justification = '';
       }
