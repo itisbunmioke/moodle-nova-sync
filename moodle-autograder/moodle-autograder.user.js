@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.56
+// @version      2.5.57
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1690,7 +1690,10 @@ Your response is the JSON object described above, and nothing else. Do not expla
     const normSub = normalizeForMatch(submissionText);
     const kept = [];
     for (const item of items || []) {
-      const text = (item?.text || '').trim();
+      // stripThinking also strips banned em/en dashes and any leaked meta-narration —
+      // every feedback path went through it before v2.5.54 restructured "feedback" into
+      // this {text, evidence} array; this path was the one gap that skipped it.
+      const text = stripThinking((item?.text || '').trim());
       if (!text) continue;
       const evidence = (item?.evidence || '').trim();
       if (evidence && !isEvidenceGrounded(evidence, normSub)) {
