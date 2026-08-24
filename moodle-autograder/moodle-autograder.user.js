@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.57
+// @version      2.5.58
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3630,6 +3630,17 @@ Check: same variable names, identical code logic, same written arguments, same p
 
           if (moveBtn) moveBtn.onclick = () => {
             cancelTimer();
+            // Cancel the pending 2-second applyResultToLiveDom retry (scheduled when the
+            // grade was first posted, above) before navigating away. Its clock starts
+            // before this Done/Stay/Move row even appears, so by the time the user reads
+            // it, clicks Move, and Moodle's own save-and-next round-trip completes, it can
+            // easily have elapsed — firing on the *next* student's page with THIS student's
+            // rubric data. On a grader with "auto-advance after rubric" enabled, that stray
+            // click triggers a real Moodle navigation, which the navWatcher then processes
+            // as another student switch — a self-sustaining cascade with no natural stop,
+            // only escapable with a page refresh. onMoodleNavigated cancels this too, but
+            // only once the navWatcher's poll catches the new uid — too late to win this race.
+            _cancelLiveTimers();
             // Prefer Moodle's own "Save and show next" button: it submits the grading form
             // and navigates in one step, clearing the "dirty" flag set by applyResultToLiveDom
             // and bypassing the unsaved-changes confirmation dialog.
@@ -4189,10 +4200,19 @@ Check: same variable names, identical code logic, same written arguments, same p
         autoSkipCount++;
         // If we've looped through every student without grading a new one, no more
         // ungraded submissions exist — stop auto-grading cleanly instead of cycling.
+        // Prefer the live dropdown's count when Moodle has populated it, but fall back
+        // to the student list captured when the panel opened (students.length, always
+        // > 0 — runGradeOne already bails out otherwise) rather than 0. The AMD grader
+        // page starts select#change-user-select with just the current student as its
+        // only option until Moodle lazily populates it (documented elsewhere in this
+        // file); without this fallback that left totalStudents at 0, which silently
+        // disabled this guard entirely and let autoAdvance cycle forever — hammering
+        // next-user every ~600 ms with no way to stop it short of a page refresh.
         const selEl = document.querySelector('select#change-user-select, select[data-action="change-user"]');
-        const totalStudents = selEl
+        const domCount = selEl
           ? [.../** @type {HTMLSelectElement} */(selEl).options].filter(o => /^\d+$/.test(o.value?.trim())).length
           : 0;
+        const totalStudents = domCount > 1 ? domCount : students.length;
         if (totalStudents > 0 && autoSkipCount >= totalStudents) {
           gradeAllActive  = false;
           gradeNRemaining = 0;
