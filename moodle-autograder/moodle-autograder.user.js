@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.51
+// @version      2.5.52
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1071,7 +1071,8 @@ FORBIDDEN in "feedback":
 - No opener type should dominate. Valid openers: a named element from the work (function name, column, chart, slide, dataset), a second-person pronoun ("You"/"Your"), an article ("The"/"A"), a verb or gerund ("Missing", "Got", "Needs", "Working", "Looks like"), a conjunction ("But", "So", "And", "Though"), a rhetorical question ("Why is...?"), a short fragment. Pick whichever sounds most natural for this specific submission.
 - No bullet points, headers, or markdown of any kind.
 - No sign-off or motivational closer of any kind. This means zero encouragement sentences at the end: no "Keep it up", "Good luck", "Best of luck", "Keep up the good work", "Keep that up in future projects", "Looking forward to seeing your next submission", "Hope this helps", "You're on the right track", "Great start", "Keep pushing", "You've got this", or any variant. End on the last piece of actionable feedback. Do not add a warm send-off.
-- Don't mention AI, this tool, or anything about how this comment was written.`;
+- Don't mention AI, this tool, or anything about how this comment was written.
+- Never mention resubmitting, resubmission, submitting again, revising and resubmitting, or any other suggestion that this work could be redone or the grade isn't final. The grade is final — critique the work as it stands, but never imply there's a path to change it.`;
   }
 
   function buildFeedbackPrompt(title, instructions, rubric, submissionText, scores, instructorName, style) {
@@ -1166,6 +1167,7 @@ Before naming any specific element in feedback — a function, column, heading, 
 - No bullet points, headers, or markdown of any kind.
 - No sign-off or motivational closer of any kind. This means zero encouragement sentences at the end: no "Keep it up", "Good luck", "Best of luck", "Keep up the good work", "Keep that up in future projects", "Looking forward to seeing your next submission", "Hope this helps", "You're on the right track", "Great start", "Keep pushing", "You've got this", or any variant. End on the last piece of actionable feedback. Do not add a warm send-off.
 - Don't mention AI, this tool, or anything about how this comment was written.
+- Never mention resubmitting, resubmission, submitting again, revising and resubmitting, or any other suggestion that this work could be redone or the grade isn't final. The grade is final — critique the work as it stands, but never imply there's a path to change it.
 
 — OUTPUT —
 Your response is the feedback text itself, and nothing else. Do not explain your reasoning. Do not narrate what you are deciding or checking. Do not write about the rules, the criteria, or what you should or should not include. If you notice yourself writing anything other than the actual feedback paragraph (or an empty string ""), stop and delete it. Output ONLY the final result.`;
