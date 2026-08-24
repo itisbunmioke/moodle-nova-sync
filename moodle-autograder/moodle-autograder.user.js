@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.54
+// @version      2.5.55
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2505,10 +2505,12 @@ Check: same variable names, identical code logic, same written arguments, same p
     .mag-fb-resize-handle[data-corner="ne"] { top:1px;  right:1px; cursor:ne-resize; border-radius:3px 0 3px 0; }
     .mag-fb-resize-handle[data-corner="sw"] { bottom:1px; left:1px;  cursor:sw-resize; border-radius:3px 0 3px 0; }
     .mag-fb-resize-handle[data-corner="se"] { bottom:1px; right:1px; cursor:se-resize; border-radius:0 3px 0 3px; }
-    /* Crop modal */
+    /* Crop modal — always-on-top blocking dialog, so its z-index must clear the highest
+       value the review panel can reach via its own click-to-front bump (1000002; see
+       reviewOverlay's mousedown handler below), not just its resting z-index. */
     #mag-crop-overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,0.84);
-      z-index: 1000001; display: flex; flex-direction: column;
+      z-index: 1000010; display: flex; flex-direction: column;
       align-items: center; justify-content: center;
     }
     #mag-crop-wrap { position: relative; cursor: crosshair; user-select: none; }
