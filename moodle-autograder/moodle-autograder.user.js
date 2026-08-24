@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.52
+// @version      2.5.53
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1059,6 +1059,8 @@ BLANK FEEDBACK: If the student received maximum points on every single criterion
 
 VERIFY BEFORE WRITING: Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, dataset column, or section title — locate it in the submission text above. If you cannot find it there, do not name it; use general terms instead. Before saying something is "missing" or "absent" in feedback, scan the full visible submission from start to end. If the topic could plausibly be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
 
+NUMBERS MUST BE EXACT: Before stating any specific count in feedback — rows sampled, columns, records, iterations, epochs, or any other quantity — find that exact number written in the submission text above (a function argument, a printed output, a stated figure). Never estimate, round, recall from a typical assignment, or guess a count from memory. If you cannot locate the precise number in the visible submission, describe it in words instead ("a small sample", "several rows") rather than inventing a figure.
+
 STRUCTURE:
 - No formula. Don't do: praise -> detail -> improvement -> encouragement. Lead with whatever matters most.
 - Name something specific. Before naming any element, confirm it appears in the submission above — if it doesn't, don't name it. Never invent specifics that aren't in the text.
@@ -1153,6 +1155,8 @@ If the student received maximum points on every criterion AND you have no specif
 
 — VERIFY BEFORE WRITING —
 Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
+
+NUMBERS MUST BE EXACT: Before stating any specific count — rows sampled, columns, records, iterations, epochs, or any other quantity — find that exact number written in the submission text above. Never estimate, round, recall from a typical assignment, or guess a count from memory. If you cannot locate the precise number, describe it in words instead ("a small sample", "several rows") rather than inventing a figure.
 
 — STRUCTURE —
 - No formula. Don't do: praise → detail → improvement → encouragement. Lead with whatever matters most.
@@ -1685,6 +1689,37 @@ Your response is the feedback text itself, and nothing else. Do not explain your
     return result;
   }
 
+  // ── Numeric-claim verification guard ────────────────────────────────────────
+  // The AI sometimes states a specific count — rows sampled, columns, records,
+  // iterations — that doesn't match the submission (e.g. "sampled 4 rows" when the
+  // code actually samples 10). HALLUCINATION BAN / VERIFY BEFORE WRITING already
+  // tell it not to do this, but that's a request, not a guarantee — same lesson as
+  // sanitizeFeedback above. Deterministic backstop: for any explicit count of a
+  // countable-in-source quantity named in feedback, confirm that exact number
+  // appears somewhere in the submission text the AI actually saw. If it doesn't,
+  // the claim isn't grounded in anything visible — drop the sentence rather than
+  // hand the student a fabricated number.
+  const NUMERIC_CLAIM_RE = /\b(\d+)\s*(rows?|samples?|columns?|records?|entries|observations?|iterations?|epochs?)\b/gi;
+
+  function verifyNumericClaims(/** @type {string} */ feedback, /** @type {string} */ submissionText) {
+    if (!feedback || !submissionText) return feedback;
+    const kept = splitSentences(feedback).filter(sentence => {
+      NUMERIC_CLAIM_RE.lastIndex = 0;
+      let m;
+      while ((m = NUMERIC_CLAIM_RE.exec(sentence))) {
+        const num = m[1];
+        if (!new RegExp(`\\b${num}\\b`).test(submissionText)) {
+          console.warn('[MAG] Dropped feedback sentence (count not found anywhere in submission — likely hallucinated):', sentence);
+          return false;
+        }
+      }
+      return true;
+    });
+    const result = kept.join(' ').trim();
+    if (!result && feedback) console.warn('[MAG] Feedback fully dropped by numeric-claim guard. Original:', feedback);
+    return result;
+  }
+
   async function gradeSubmission(/** @type {string} */ title, /** @type {string} */ instructions, /** @type {any[]} */ rubric, /** @type {string} */ submissionText, /** @type {any} */ inlineData, /** @type {string[]} */ submittedFiles = []) {
     const sub            = truncateSubmission(submissionText);
     const combinedPrompt = buildCombinedPrompt(title, instructions, rubric, sub, CFG.instructorName, CFG.instructorStyle, submittedFiles);
@@ -1731,7 +1766,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
         scores:         grading.scores,
         totalPoints:    grading.totalPoints,
         overallComment: grading.overallComment,
-        feedback:       sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''),
+        feedback:       verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''), sub),
       };
     }
 
@@ -1756,7 +1791,7 @@ Your response is the feedback text itself, and nothing else. Do not explain your
       feedback = (await callClaude(feedPrompt)).trim();
     }
     if (!feedback) feedback = grading.overallComment || '';
-    feedback = sanitizeFeedback(grading.scores, rubric, feedback);
+    feedback = verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, feedback), sub);
 
     return { scores: grading.scores, totalPoints: grading.totalPoints, overallComment: grading.overallComment, feedback };
   }
