@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.58
+// @version      2.5.59
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1651,7 +1651,10 @@ Your response is the JSON object described above, and nothing else. Do not expla
 
   // Evidence shorter than this is too generic to prove anything (a single common
   // word will trivially "match" almost any submission) — treat it as unverified.
-  const MIN_EVIDENCE_LENGTH = 8;
+  // Kept low: real short quotes are common and legitimate (a column name like "age",
+  // a command like "git log") — this only needs to catch single-word noise, not
+  // filter out genuinely specific short evidence.
+  const MIN_EVIDENCE_LENGTH = 4;
 
   function isEvidenceGrounded(/** @type {string} */ evidence, /** @type {string} */ normalizedSubmission) {
     const normEvidence = normalizeForMatch(evidence);
@@ -1734,10 +1737,19 @@ Your response is the JSON object described above, and nothing else. Do not expla
   // but that's a request, not a guarantee — LLMs still sometimes write feedback like
   // "only got 4/4 instead of full points" for a criterion that scored max. This is a
   // deterministic backstop that catches that failure mode instead of trusting the prompt.
-  const DEDUCTION_CUES = /\b(only (got|received|earned|scored)|instead of( the)? full|didn'?t (get|earn|receive) full|not full (points|marks|credit)|lost \d|deducted|docked)\b/i;
+  // "lost/deducted/docked" require nearby points/marks/credit language — bare, they false-
+  // positive on legitimate technical content (e.g. "the pruned model lost 2% accuracy").
+  const DEDUCTION_CUES = /\b(only (got|received|earned|scored)|instead of( the)? full|didn'?t (get|earn|receive) full|not full (points|marks|credit)|(lost|deducted|docked)\s+(\d+\s+)?(points?|marks?|credit))\b/i;
 
   function splitSentences(/** @type {string} */ text) {
-    return (text.match(/[^.!?]+[.!?]*/g) || [text]).map(s => s.trim()).filter(Boolean);
+    // Guard decimal points (digit.digit, e.g. "0.87") from being read as sentence
+    // boundaries: swap them for a control character absent from normal text, split,
+    // then swap back inside each resulting fragment.
+    const GUARD = '\x01';
+    const guarded = text.replace(/(\d)\.(\d)/g, `$1${GUARD}$2`);
+    return (guarded.match(/[^.!?]+[.!?]*/g) || [guarded])
+      .map(s => s.split(GUARD).join('.').trim())
+      .filter(Boolean);
   }
 
   function sanitizeFeedback(/** @type {any[]} */ scores, /** @type {any[]} */ rubric, /** @type {string} */ feedback) {
@@ -1811,6 +1823,9 @@ Your response is the JSON object described above, and nothing else. Do not expla
     try {
       const parsed = parseGradingJSON(raw);
       if (Array.isArray(parsed?.feedback)) return groundFeedback(parsed.feedback, submissionText);
+      // Model returned valid JSON but the old { "feedback": "..." } string shape —
+      // extract the string rather than falling through to posting the raw JSON text.
+      if (typeof parsed?.feedback === 'string') return stripThinking(parsed.feedback.trim());
     } catch {}
     console.warn('[MAG] Feedback response was not the expected JSON shape — using raw text without evidence grounding:', raw.slice(0, 200));
     return stripThinking(raw);
