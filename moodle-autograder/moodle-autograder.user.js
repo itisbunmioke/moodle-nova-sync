@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.59
+// @version      2.5.60
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1036,6 +1036,7 @@ NO LANGUAGE FEEDBACK: Never mention grammar, spelling, punctuation, sentence str
 
 BANNED CHARACTERS AND PHRASES (never write any of these in "feedback"):
 Em-dash character: BANNED. Do not use it anywhere in "feedback". Replace with a semicolon, colon, or start a new sentence.
+Backtick character (\`): BANNED. Never use backticks to mark code, variable names, or technical terms; Moodle's comment box renders them as literal characters, not styled code. Use a single quote for a general reference (a column named 'age') and a double quote when the quoted text is verbatim from the student's submission ("df.sample(n=10)").
 "demonstrates", "showcases", "commendable", "proficiency", "exhibits", "furthermore", "additionally",
 "in conclusion", "overall", "it is worth noting", "it is important to", "reflects", "highlights",
 "clear understanding", "well-structured", "effectively", "excellent work", "great job", "well done",
@@ -1139,6 +1140,7 @@ At least one sentence under 7 words. At least one over 20 words (with a subordin
 
 — BANNED CHARACTERS AND PHRASES (never write any of these) —
 Em-dash character "—": BANNED. Do not use it anywhere. Replace with a semicolon, colon, or start a new sentence.
+Backtick character (\`): BANNED. Never use backticks to mark code, variable names, or technical terms; Moodle's comment box renders them as literal characters, not styled code. Use a single quote for a general reference (a column named 'age') and a double quote when the quoted text is verbatim from the student's submission ("df.sample(n=10)").
 "demonstrates", "showcases", "commendable", "proficiency", "exhibits", "furthermore", "additionally",
 "in conclusion", "overall", "it is worth noting", "it is important to", "reflects", "highlights",
 "clear understanding", "well-structured", "effectively", "excellent work", "great job", "well done",
@@ -1511,6 +1513,11 @@ Your response is the JSON object described above, and nothing else. Do not expla
 
     // 4. Strip em dashes (U+2014) and en dashes (U+2013).
     text = text.replace(/\s*[–—]\s*/g, '; ').replace(/;\s*$/, '').trim();
+
+    // 5. Convert backtick-quoted spans to single quotes — backticks render as literal
+    // characters in Moodle's plain-text comment box, not as styled code. Any stray
+    // unpaired backtick also becomes a single quote as a safe fallback.
+    text = text.replace(/`([^`]*)`/g, "'$1'").replace(/`/g, "'");
     return text;
   }
 
