@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.60
+// @version      2.5.61
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3637,8 +3637,24 @@ Check: same variable names, identical code logic, same written arguments, same p
           document.addEventListener('keydown', keyHandler);
           doneBtn.onclick = dismiss;
 
+          // applyResultToLiveDom's rubric-cell clicks (above) can themselves have already
+          // triggered Moodle's own auto-advance-after-rubric-completion — the same behavior
+          // the auto-post path above guards against with this exact check before clicking
+          // saveandshownext. If that already happened, the live DOM now belongs to a
+          // DIFFERENT, unrelated student; blindly clicking Stay/Move's buttons would save a
+          // blank form over them and, for Move, cascade into yet another unwanted
+          // navigation — which the navWatcher then keeps processing, showing up as
+          // continuous flickering on every single post rather than an occasional race.
+          const stillOnThisStudent = () => {
+            const nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
+              'select#change-user-select, select[data-action="change-user"]'
+            ))?.value?.trim() || '';
+            return !nowUid || nowUid === student.uid;
+          };
+
           if (stayBtn) stayBtn.onclick = () => {
             cancelTimer();
+            if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
             // Click Moodle's own "Save changes" button — re-submits the live form (which
             // applyResultToLiveDom already filled), clears the "dirty" flag, and stays on
             // this student without navigation. Same logic as Save & Move / saveandshownext.
@@ -3653,16 +3669,10 @@ Check: same variable names, identical code logic, same written arguments, same p
           if (moveBtn) moveBtn.onclick = () => {
             cancelTimer();
             // Cancel the pending 2-second applyResultToLiveDom retry (scheduled when the
-            // grade was first posted, above) before navigating away. Its clock starts
-            // before this Done/Stay/Move row even appears, so by the time the user reads
-            // it, clicks Move, and Moodle's own save-and-next round-trip completes, it can
-            // easily have elapsed — firing on the *next* student's page with THIS student's
-            // rubric data. On a grader with "auto-advance after rubric" enabled, that stray
-            // click triggers a real Moodle navigation, which the navWatcher then processes
-            // as another student switch — a self-sustaining cascade with no natural stop,
-            // only escapable with a page refresh. onMoodleNavigated cancels this too, but
-            // only once the navWatcher's poll catches the new uid — too late to win this race.
+            // grade was first posted, above) before navigating away — see stillOnThisStudent
+            // above for why a stale click here is dangerous.
             _cancelLiveTimers();
+            if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
             // Prefer Moodle's own "Save and show next" button: it submits the grading form
             // and navigates in one step, clearing the "dirty" flag set by applyResultToLiveDom
             // and bypassing the unsaved-changes confirmation dialog.
