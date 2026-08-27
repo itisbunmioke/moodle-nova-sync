@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.63
+// @version      2.5.64
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2593,7 +2593,12 @@ Check: same variable names, identical code logic, same written arguments, same p
     .mag-progress-fill.mag-indeterminate {
       /* Full-width pulse instead of a fake percentage: the AI call is a genuine black box —
          no per-token signal is available without switching every provider to streaming — so
-         this stage is shown as "working, duration unknown" rather than faking a number. */
+         this stage is shown as "working, duration unknown" rather than faking a number.
+         Same warm orange/gold used by moodle-nova-sync-extension's own progress bar
+         (#mns-progress-fill) when it fills scores into Nova — mirrored for a seamless
+         shimmer loop instead of Nova's one-directional fill gradient. */
+      background: linear-gradient(90deg, #c94400, #ff7e00, #ffc200, #ff7e00, #c94400);
+      background-size: 200% 100%;
       animation: mag-shimmer 1.8s linear infinite, mag-pulse 1.4s ease-in-out infinite;
     }
     @keyframes mag-pulse {
