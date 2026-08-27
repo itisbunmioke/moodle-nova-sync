@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.62
+// @version      2.5.63
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2587,6 +2587,19 @@ Check: same variable names, identical code logic, same written arguments, same p
       0%   { background-position: 0% 50%; }
       100% { background-position: 200% 50%; }
     }
+    /* Grading progress — reflects real pipeline stages (see gradeCurrentStudent), not decoration */
+    .mag-grade-progress { width: 100%; margin: 6px 0 2px; }
+    .mag-grade-progress-label { font-size: 11px; color: #9070c0; margin-top: 5px; }
+    .mag-progress-fill.mag-indeterminate {
+      /* Full-width pulse instead of a fake percentage: the AI call is a genuine black box —
+         no per-token signal is available without switching every provider to streaming — so
+         this stage is shown as "working, duration unknown" rather than faking a number. */
+      animation: mag-shimmer 1.8s linear infinite, mag-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes mag-pulse {
+      0%, 100% { opacity: 0.55; }
+      50%      { opacity: 1; }
+    }
     .mag-post-result-row { display: none; flex-direction: row; gap: 6px; margin-top: 8px; }
     .mag-done-btn, .mag-stay-btn, .mag-move-btn {
       flex: 1; border: none; color: #fff;
@@ -3316,6 +3329,31 @@ Check: same variable names, identical code logic, same written arguments, same p
     return 'Post Grade Only';
   }
 
+  // Grading progress bar: driven off real pipeline stages in gradeCurrentStudent (file
+  // extraction is a known fraction of N files; the AI call itself has no observable
+  // progress without streaming every provider, so it's shown as indeterminate — see the
+  // CSS comment above .mag-progress-fill.mag-indeterminate). Both are no-ops once the
+  // card has been rebuilt with a real result (the elements no longer exist).
+  function setGradeProgress(/** @type {string} */ uid, /** @type {number} */ percent, /** @type {string} */ label) {
+    const fill = document.getElementById(`mag-gradefill-${uid}`);
+    const lbl  = document.getElementById(`mag-gradelabel-${uid}`);
+    if (fill) {
+      fill.classList.remove('mag-indeterminate');
+      fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    }
+    if (lbl) lbl.textContent = `${label} (${Math.round(percent)}%)`;
+  }
+
+  function setGradeProgressIndeterminate(/** @type {string} */ uid, /** @type {string} */ label) {
+    const fill = document.getElementById(`mag-gradefill-${uid}`);
+    const lbl  = document.getElementById(`mag-gradelabel-${uid}`);
+    if (fill) {
+      fill.classList.add('mag-indeterminate');
+      fill.style.width = '100%';
+    }
+    if (lbl) lbl.textContent = label;
+  }
+
   function buildStudentCard(student, rubric, result, idx) {
     const card = document.createElement('div');
     card.className = 'mag-student-card';
@@ -3334,7 +3372,10 @@ Check: same variable names, identical code logic, same written arguments, same p
     const scaled100 = maxRaw > 0 ? Math.round((rawTotal / maxRaw) * 100) : rawTotal;
 
     const scoresTable = !result
-      ? '<div style="color:#9070c0;font-size:12px">Waiting to be graded…</div>'
+      ? `<div class="mag-grade-progress" id="mag-gradeprog-${student.uid}">
+           <div class="mag-progress-track"><div class="mag-progress-fill" id="mag-gradefill-${student.uid}"></div></div>
+           <div class="mag-grade-progress-label" id="mag-gradelabel-${student.uid}">Waiting to be graded…</div>
+         </div>`
       : result.error
         ? `<div style="color:#ff7070;font-size:12px">⚠ ${result.error}</div>`
         : result.moodleGraded
@@ -3713,6 +3754,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         autoGradeThisPost = false;
         if (isAutoPost || isAutoGrading()) {
           if (gradeNRemaining > 0) gradeNRemaining--;
+          refreshAutoGradeBtn();
           await sleep(1500);
           const _mn = /** @type {HTMLElement|null} */(document.querySelector(
             '[data-action="next-user"], [data-action="nextuser"]'
@@ -3992,6 +4034,7 @@ Check: same variable names, identical code logic, same written arguments, same p
 
       const statusEl2 = document.getElementById(`mag-status-${student.uid}`);
       if (statusEl2) { statusEl2.textContent = '⟳ Grading…'; statusEl2.className = 'mag-card-status grading'; }
+      setGradeProgress(student.uid, 5, 'Fetching submission');
 
       try {
         let submissionText = student.onlineText || '';
@@ -4022,8 +4065,10 @@ Check: same variable names, identical code logic, same written arguments, same p
         const submittedFiles = [];
         if (fileLinks.length) {
           const parts = [];
-          for (const file of fileLinks) {
+          for (let _fi = 0; _fi < fileLinks.length; _fi++) {
+            const file = fileLinks[_fi];
             setStatus(`Reading ${file.filename}…`, '#c9a0ff');
+            setGradeProgress(student.uid, 10 + Math.round((_fi / fileLinks.length) * 45), `Reading ${file.filename}`);
             try {
               const extracted = await extractSubmission(file.url, file.filename);
               if (extracted.text) parts.push(`\n\n=== SUBMITTED: ${file.filename} ===\n${extracted.text}`);
@@ -4045,6 +4090,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         // One retry for transient failures (rate-limit, network blip, 5xx).
         // Permanent errors (missing API key, bad prompt) are not worth retrying.
         let result;
+        setGradeProgressIndeterminate(student.uid, 'Waiting for AI response…');
         for (let _attempt = 0; _attempt < 2; _attempt++) {
           try {
             result = await gradeSubmission(title, instructions, rubric, submissionText, inlineData, submittedFiles);
@@ -4056,6 +4102,7 @@ Check: same variable names, identical code logic, same written arguments, same p
               && !/not configured|No AI provider/i.test(_msg);
             if (!_transient) throw _gradeErr;
             setStatus(`Transient error — retrying ${student.name} in 3 s…`, '#ffb060');
+            setGradeProgressIndeterminate(student.uid, 'Retrying after a transient error…');
             await sleep(3000);
           }
         }
@@ -4072,6 +4119,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         }
         if (isAutoGrading()) {
           if (gradeNRemaining > 0) gradeNRemaining--;
+          refreshAutoGradeBtn();
           autoSkipCount = 0; // a real grade was posted — reset the cycle-detection counter
           autoGradeThisPost = true; // tell postBtn.onclick to use the auto-save path
           setStatus(`${student.name} graded — auto-posting…`, '#c9a0ff');
@@ -4088,6 +4136,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         // In auto-grade mode, don't get stuck on an errored student — skip via next-user.
         if (isAutoGrading()) {
           if (gradeNRemaining > 0) gradeNRemaining--;
+          refreshAutoGradeBtn();
           autoGradeThisPost = false;
           await sleep(1500);
           const _mn = /** @type {HTMLElement|null} */(document.querySelector(
@@ -4162,17 +4211,11 @@ Check: same variable names, identical code logic, same written arguments, same p
       navSlot.appendChild(nextBtn);
       if (isAutoGrading()) {
         const stopBtn = document.createElement('button');
+        stopBtn.id = 'mag-stop-auto-btn';
         stopBtn.className = 'mag-btn';
         stopBtn.style.cssText = 'background:#6a1010;border-color:#a03030;margin-left:4px';
         stopBtn.textContent = '⬛ Stop Auto';
-        stopBtn.onclick = () => {
-          gradeAllActive    = false;
-          gradeNRemaining   = 0;
-          autoSkipCount     = 0;
-          autoGradeThisPost = false;
-          stopBtn.remove();
-          setStatus('Auto-grading stopped.', '#9070c0');
-        };
+        stopBtn.onclick = stopAutoNow;
         navSlot.appendChild(stopBtn);
       }
     }
@@ -4256,6 +4299,7 @@ Check: same variable names, identical code logic, same written arguments, same p
           gradeAllActive  = false;
           gradeNRemaining = 0;
           autoSkipCount   = 0;
+          refreshAutoGradeBtn();
           setStatus('All available submissions have been graded.', '#40c080');
           return;
         }
@@ -4378,7 +4422,43 @@ Check: same variable names, identical code logic, same written arguments, same p
   let gradeNRemaining   = 0;    // set to N by "Grade N" — decrements after each auto-post; stops at 0
   let autoSkipCount     = 0;    // consecutive auto-advances without grading; stops cycling when ≥ totalStudents
   let autoGradeThisPost = false; // set true by gradeCurrentStudent just before pb.click() in auto mode
+  let lastGradeNSize    = 0;    // remembers the last "Grade N" batch size, to offer a one-click repeat once it finishes on its own
   const isAutoGrading = () => gradeAllActive || gradeNRemaining > 0;
+
+  // Manual stop: no repeat offered afterward — the user asked to stop, not to pause.
+  function stopAutoNow() {
+    gradeAllActive    = false;
+    gradeNRemaining   = 0;
+    autoSkipCount     = 0;
+    autoGradeThisPost = false;
+    lastGradeNSize    = 0;
+    document.getElementById('mag-stop-auto-btn')?.remove();
+    setStatus('Auto-grading stopped.', '#9070c0');
+  }
+
+  // Call after any point where auto-grading may have just finished on its own (a Grade N
+  // batch running its counter to 0, or Grade All's autoAdvance detecting a full skip cycle)
+  // — as opposed to the user clicking Stop. #mag-stop-auto-btn otherwise lingers with a
+  // "Stop Auto" label that no longer means anything, since isAutoGrading() has already
+  // flipped false. A finished Grade N batch gets a one-click "repeat" instead of just
+  // vanishing; Grade All has nothing left to repeat, so its button simply disappears.
+  function refreshAutoGradeBtn() {
+    const btn = /** @type {HTMLButtonElement|null} */(document.getElementById('mag-stop-auto-btn'));
+    if (!btn || isAutoGrading()) return;
+    if (lastGradeNSize > 0) {
+      btn.textContent = `↻ Grade ${lastGradeNSize} more`;
+      btn.style.cssText = 'background:#2a1050;border-color:#7040c0;color:#d0b0ff;margin-left:4px';
+      btn.onclick = () => {
+        gradeNRemaining = lastGradeNSize;
+        btn.textContent = '⬛ Stop Auto';
+        btn.style.cssText = 'background:#6a1010;border-color:#a03030;margin-left:4px';
+        btn.onclick = stopAutoNow;
+        if (activeGradeCurrentFn) activeGradeCurrentFn().catch(e => setStatus('⚠ ' + e.message, '#ff9060'));
+      };
+    } else {
+      btn.remove();
+    }
+  }
 
   // Plagiarism cache persists across panel close/reopen AND page refreshes (same tab).
   // Keyed by assignment id param so different assignments don't bleed into each other.
@@ -4416,12 +4496,14 @@ Check: same variable names, identical code logic, same written arguments, same p
     if (reviewOverlay.classList.contains('open')) return;
     const n = Math.max(1, parseInt(gradeNCountEl.value) || 5);
     gradeNRemaining = n;
+    lastGradeNSize  = n; // remembered so refreshAutoGradeBtn can offer a one-click repeat later
     runGradeOne().catch(e => { gradeNRemaining = 0; setStatus('⚠ ' + e.message, '#ff9060'); });
   };
 
   /** @type {HTMLElement} */(document.getElementById('mag-grade-all')).onclick = () => {
     if (reviewOverlay.classList.contains('open')) return; // already open
     gradeAllActive = true;
+    lastGradeNSize = 0; // Grade All has no batch size to repeat — don't inherit a stale one
     runGradeOne().catch(e => { gradeAllActive = false; gradeNRemaining = 0; setStatus('⚠ ' + e.message, '#ff9060'); });
   };
 
