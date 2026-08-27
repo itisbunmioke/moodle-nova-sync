@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.64
+// @version      2.5.65
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1067,6 +1067,8 @@ VERIFY BEFORE WRITING: Before naming any specific element in feedback — a func
 
 NUMBERS MUST BE EXACT: Before stating any specific count in feedback — rows sampled, columns, records, iterations, epochs, or any other quantity — find that exact number written in the submission text above (a function argument, a printed output, a stated figure). Never estimate, round, recall from a typical assignment, or guess a count from memory. If you cannot locate the precise number in the visible submission, describe it in words instead ("a small sample", "several rows") rather than inventing a figure.
 
+DIRECT ADDRESS (mandatory): Write TO the student, not ABOUT them. Never refer to the student in the third person — "the student", "this student", "they"/"their" meaning the student — anywhere in "feedback". Address them directly as "you"/"your" throughout. An opener naming an element from the work or starting with "The"/"A" is still fine (e.g. "The function..."), but any pronoun for the person must be "you", never a third-person reference. Feedback written as if describing the student to someone else, rather than talking to them, is wrong regardless of how accurate its content is.
+
 STRUCTURE:
 - No formula. Don't do: praise -> detail -> improvement -> encouragement. Lead with whatever matters most.
 - Name something specific. Before naming any element, confirm it appears in the submission above — if it doesn't, don't name it. Never invent specifics that aren't in the text.
@@ -1172,6 +1174,8 @@ If the student received maximum points on every criterion AND you have no specif
 Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
 
 NUMBERS MUST BE EXACT: Before stating any specific count — rows sampled, columns, records, iterations, epochs, or any other quantity — find that exact number written in the submission text above. Never estimate, round, recall from a typical assignment, or guess a count from memory. If you cannot locate the precise number, describe it in words instead ("a small sample", "several rows") rather than inventing a figure.
+
+DIRECT ADDRESS (mandatory): Write TO the student, not ABOUT them. Never refer to the student in the third person — "the student", "this student", "they"/"their" meaning the student — anywhere in the feedback. Address them directly as "you"/"your" throughout. An opener naming an element from the work or starting with "The"/"A" is still fine (e.g. "The function..."), but any pronoun for the person must be "you", never a third-person reference.
 
 — STRUCTURE —
 - No formula. Don't do: praise → detail → improvement → encouragement. Lead with whatever matters most.
@@ -1829,6 +1833,56 @@ Your response is the JSON object described above, and nothing else. Do not expla
     return result;
   }
 
+  // ── Banned-phrase / voice guard ─────────────────────────────────────────────
+  // Deterministic backstop for the BANNED CHARACTERS AND PHRASES and DIRECT ADDRESS prompt
+  // rules — same lesson as every other guard here: asking nicely isn't enough. Observed
+  // case: told never to write "demonstrates", the model wrote "demonstrating" instead —
+  // same word, different inflection, technically not the banned literal string. Single-word
+  // entries below use \w* so an inflection can't dodge the ban; multi-word idioms are
+  // matched close to verbatim since they don't inflect the same way. "significant" and
+  // "robust" carry a narrow exception for their legitimate statistics/ML meaning
+  // ("statistically significant", "robust to outliers", "RobustScaler") since this list is
+  // now enforced mechanically instead of being left to the model's judgment.
+  const BANNED_PHRASE_SIGNALS = [
+    /\bdemonstrat\w*\b/i, /\bshowcas\w*\b/i, /\bcommendable\b/i, /\bproficien\w*\b/i,
+    /\bexhibit\w*\b/i, /\bfurthermore\b/i, /\badditionally\b/i, /\bin conclusion\b/i,
+    /\boverall\b/i, /\bit'?s? (?:is )?worth noting\b/i, /\bit'?s? (?:is )?important to\b/i,
+    /\breflect\w*\b/i, /\bhighlight\w*\b/i, /\bclear understanding\b/i, /\bwell-?structured\b/i,
+    /\beffectively\b/i, /\bexcellent work\b/i, /\bgreat job\b/i, /\bwell done\b/i,
+    /\bstrong effort\b/i, /\bshows? a good understanding\b/i, /\bmoving forward\b/i,
+    /\bensure that\b/i, /\bit'?s clear that\b/i, /\byou'?(?:ve| have) shown\b/i,
+    /\bnoteworthy\b/i, /\bimpress\w*\b/i, /\bsolid (?:work|foundation|effort|overall)\b/i,
+    /\bis solid\b/i, /\ba solid\b/i, /\byour analysis is solid\b/i, /\byou'?(?:ve| have) laid\b/i,
+    /\blaid a (?:foundation|solid)\b/i, /\btighten\w*(?: up)?\b/i, /\bdecent attempt\b/i,
+    /\bthorough\w*\b/i, /\bcomprehensive\b/i, /(?<!statistically )\brobust\b(?!\s+(?:to|regression|scal\w*))/i,
+    /\bvaluable\b/i, /\binsightful\b/i, /\bthoughtful\w*\b/i, /\bmeaningful\w*\b/i,
+    /\bcrucial\b/i, /(?<!statistically )\bsignificant\b/i, /\bnotable\b/i, /\bit is evident\b/i,
+    /\bit can be seen\b/i, /\bthis submission\b/i, /\bas mentioned\b/i, /\bin summary\b/i,
+    /\bon the whole\b/i, /\bdelve\w*\b/i, /\bgrasp\b/i, /\bnuanced\b/i, /\btapestry\b/i,
+    /\butiliz\w*\b/i, /\bleverag\w*\s+(?:the|this|their|it)\b/i, /\bstreamlin\w*\b/i,
+    /\bdive into\b/i, /\bfoster\w*\b/i, /\bgarner\w*\b/i, /\bit'?s worth\b/i, /\bat its core\b/i,
+    /\bin essence\b/i, /\bgoing forward\b/i, /\btake ?away\b/i, /\ba testament to\b/i,
+    /\bspeaks to\b/i, /\bspeaks volumes\b/i, /\bon that note\b/i, /\bwith that said\b/i,
+    /\bhaving said that\b/i, /\bneedless to say\b/i, /\bby and large\b/i, /\brest assured\b/i,
+    // DIRECT ADDRESS — third-person references to the student instead of "you"/"your".
+    /\bthe student'?s?\b/i, /\bthis student'?s?\b/i,
+  ];
+
+  function stripBannedPhrases(/** @type {string} */ feedback) {
+    if (!feedback) return feedback;
+    const kept = splitSentences(feedback).filter(sentence => {
+      const hit = BANNED_PHRASE_SIGNALS.find(p => p.test(sentence));
+      if (hit) {
+        console.warn('[MAG] Dropped feedback sentence (banned phrase / third-person voice):', sentence, '| matched:', hit);
+        return false;
+      }
+      return true;
+    });
+    const result = kept.join(' ').trim();
+    if (!result && feedback) console.warn('[MAG] Feedback fully dropped by banned-phrase guard. Original:', feedback);
+    return result;
+  }
+
   // buildFeedbackPrompt now asks for { "feedback": [{text, evidence}, ...] } JSON — call the
   // AI, parse that shape, and ground it. Falls back to raw text (no evidence grounding
   // possible) if the model doesn't return the expected JSON, rather than losing the response.
@@ -1891,7 +1945,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
         scores:         grading.scores,
         totalPoints:    grading.totalPoints,
         overallComment: grading.overallComment,
-        feedback:       verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''), sub),
+        feedback:       stripBannedPhrases(verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''), sub)),
       };
     }
 
@@ -1919,7 +1973,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
       feedback = await generateGroundedFeedback(feedPrompt, true, sub);
     }
     if (!feedback) feedback = grading.overallComment || '';
-    feedback = verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, feedback), sub);
+    feedback = stripBannedPhrases(verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, feedback), sub));
 
     return { scores: grading.scores, totalPoints: grading.totalPoints, overallComment: grading.overallComment, feedback };
   }
