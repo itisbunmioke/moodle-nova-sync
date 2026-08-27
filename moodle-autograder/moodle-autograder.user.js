@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.61
+// @version      2.5.62
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1497,6 +1497,13 @@ Your response is the JSON object described above, and nothing else. Do not expla
       /the prompt (?:says|requires|instructs|asks|tells)/i,
       /(?:the )?AI (?:should|must|can|will) (?:recogni[sz]e|determine|decide|return|output) (?:when|whether|if)/i,
       /my (?:instructions?|rules?|guidelines?) (?:say|require|state|tell me)/i,
+      // Model narrating its own drafting process rather than writing the feedback itself —
+      // e.g. "Now, construct sentences. I need to be careful with banned phrases. Let's
+      // list banned: ...", reciting the BANNED CHARACTERS AND PHRASES rule verbatim.
+      /\bbanned\s+(phrase|word|character)/i,
+      /\blet'?s\s+list\b/i,
+      /\bi need to be careful\b/i,
+      /\bconstruct\s+sentences?\b/i,
     ];
     if (hardSignals.some(p => p.test(text))) return '';
 
