@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.66
+// @version      2.5.67
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4469,6 +4469,18 @@ Check: same variable names, identical code logic, same written arguments, same p
     // Defer: try after 1.5 s once AMD has had time to populate the full student list.
     setTimeout(() => refreshNavBtnStates(getMoodleUid()), 1500);
 
+    // Circuit breaker: if navigation switches faster than any human could actually click
+    // (observed: dozens of switches per second in a sustained loop, only breakable by a
+    // manual Prev click), stop the watcher automatically instead of requiring that manual
+    // intervention. This doesn't need to know *why* the loop started — whatever the exact
+    // trigger (Moodle's own auto-advance interacting oddly with our rubric clicks, a stale
+    // retry, something else) it's never legitimate for this many switches to happen this
+    // fast, so treat the rate itself as the thing to guard against.
+    /** @type {number[]} */
+    const recentNavTimestamps = [];
+    const NAV_RATE_LIMIT_WINDOW_MS = 2000;
+    const NAV_RATE_LIMIT_MAX       = 4; // more than this many switches within the window trips it
+
     // Core navigation detector. Checks three signals:
     //   1. select#change-user-select value (primary — AMD updates this on navigation)
     //   2. URL userid param (fallback — Moodle pushState before AMD updates select)
@@ -4487,6 +4499,19 @@ Check: same variable names, identical code logic, same written arguments, same p
       }
 
       if (uid && uid !== lastWatchedUid) {
+        const now = Date.now();
+        recentNavTimestamps.push(now);
+        while (recentNavTimestamps.length && now - recentNavTimestamps[0] > NAV_RATE_LIMIT_WINDOW_MS) recentNavTimestamps.shift();
+        if (recentNavTimestamps.length > NAV_RATE_LIMIT_MAX) {
+          console.error('[MAG] Runaway navigation detected —', recentNavTimestamps.length, 'switches in', NAV_RATE_LIMIT_WINDOW_MS, 'ms. Stopping the navigation watcher automatically.');
+          clearInterval(navWatcher);
+          activeGradeCurrentFn = null;
+          gradeAllActive    = false;
+          gradeNRemaining   = 0;
+          autoGradeThisPost = false;
+          setStatus('⚠ Rapid navigation loop detected and stopped automatically. Auto-grading is off for this session; normal navigation should still work — refresh the page if it doesn’t.', '#ff9060');
+          return;
+        }
         lastWatchedUid = uid;
         navBusy = true;
         onMoodleNavigated(uid)
