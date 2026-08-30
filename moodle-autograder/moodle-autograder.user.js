@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.67
+// @version      2.5.68
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4469,17 +4469,25 @@ Check: same variable names, identical code logic, same written arguments, same p
     // Defer: try after 1.5 s once AMD has had time to populate the full student list.
     setTimeout(() => refreshNavBtnStates(getMoodleUid()), 1500);
 
-    // Circuit breaker: if navigation switches faster than any human could actually click
-    // (observed: dozens of switches per second in a sustained loop, only breakable by a
-    // manual Prev click), stop the watcher automatically instead of requiring that manual
-    // intervention. This doesn't need to know *why* the loop started — whatever the exact
-    // trigger (Moodle's own auto-advance interacting oddly with our rubric clicks, a stale
-    // retry, something else) it's never legitimate for this many switches to happen this
-    // fast, so treat the rate itself as the thing to guard against.
+    // Runaway-navigation guard: if switches happen faster than any human could actually
+    // click (observed: a sustained rapid loop, only breakable by a manual Prev click),
+    // pause PROCESSING for a short cooldown instead of reacting to every one — but keep
+    // the interval itself running. v2.5.67 called clearInterval(navWatcher) here, which
+    // stopped the watcher permanently; the magSelEl 'change' listener doesn't reliably
+    // replace it, since Moodle's AMD almost certainly updates the select's value via JS
+    // (select.value = uid) rather than genuine user interaction, and setting .value
+    // programmatically does not dispatch a native change event — so once the interval
+    // died, the panel had no way left to detect navigation at all (confirmed: Moodle's
+    // own Next/Prev kept moving the underlying page, but the panel just sat static).
+    // This version self-heals: once whatever caused the burst quiets down (or even if it
+    // doesn't — see below), the panel syncs itself to wherever Moodle currently is,
+    // with no manual click and no refresh required.
     /** @type {number[]} */
     const recentNavTimestamps = [];
     const NAV_RATE_LIMIT_WINDOW_MS = 2000;
-    const NAV_RATE_LIMIT_MAX       = 4; // more than this many switches within the window trips it
+    const NAV_RATE_LIMIT_MAX       = 4;    // more than this many switches within the window trips it
+    const NAV_COOLDOWN_MS          = 3000; // how long to ignore further switches once tripped
+    let navCooldownUntil = 0;
 
     // Core navigation detector. Checks three signals:
     //   1. select#change-user-select value (primary — AMD updates this on navigation)
@@ -4500,16 +4508,22 @@ Check: same variable names, identical code logic, same written arguments, same p
 
       if (uid && uid !== lastWatchedUid) {
         const now = Date.now();
+        // Still cooling down from a previously detected burst — skip this one, but keep
+        // polling (lastWatchedUid is deliberately left stale) so the very next check
+        // after the cooldown expires sees a real change and syncs to wherever things
+        // currently stand, exactly once.
+        if (now < navCooldownUntil) return;
+
         recentNavTimestamps.push(now);
         while (recentNavTimestamps.length && now - recentNavTimestamps[0] > NAV_RATE_LIMIT_WINDOW_MS) recentNavTimestamps.shift();
         if (recentNavTimestamps.length > NAV_RATE_LIMIT_MAX) {
-          console.error('[MAG] Runaway navigation detected —', recentNavTimestamps.length, 'switches in', NAV_RATE_LIMIT_WINDOW_MS, 'ms. Stopping the navigation watcher automatically.');
-          clearInterval(navWatcher);
-          activeGradeCurrentFn = null;
+          console.error('[MAG] Runaway navigation detected —', recentNavTimestamps.length, 'switches in', NAV_RATE_LIMIT_WINDOW_MS, 'ms. Pausing navigation tracking for', NAV_COOLDOWN_MS / 1000, 's.');
+          recentNavTimestamps.length = 0;
+          navCooldownUntil = now + NAV_COOLDOWN_MS;
           gradeAllActive    = false;
           gradeNRemaining   = 0;
           autoGradeThisPost = false;
-          setStatus('⚠ Rapid navigation loop detected and stopped automatically. Auto-grading is off for this session; normal navigation should still work — refresh the page if it doesn’t.', '#ff9060');
+          setStatus('⚠ Rapid navigation loop detected — pausing briefly, the panel will resync automatically.', '#ff9060');
           return;
         }
         lastWatchedUid = uid;
