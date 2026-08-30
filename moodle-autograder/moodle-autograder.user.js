@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.70
+// @version      2.5.71
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -102,34 +102,33 @@
   const _cancelLiveTimers = () => { _liveTimers.forEach(clearTimeout); _liveTimers.clear(); };
 
   // After saving a grade via form POST the AMD grader still shows the old (unselected) rubric
-  // because the SPA cached its state before we posted. This used to fix that by directly
-  // clicking each rubric level cell on the live DOM — removed (see the function's own
-  // comment): that clicking could leave a student's page stuck in a navigation loop inside
-  // Moodle's own AMD event dispatch. Rubric cells are no longer visually marked live; the
-  // saved grade is still correct on refresh. Feedback/remark text is still written live.
+  // because the SPA cached its state before we posted. We fix this by directly updating the
+  // live DOM: find each rubric level cell by its ID suffix, clear siblings, mark it checked,
+  // and fire a click so Moodle's own cell-click handler (if present) can also run.
+  // Also update the Atto feedback editor div and its backing textarea.
   async function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean}} */ opts = {}) {
     // immediate: true → skip all setTimeout retries (safe to call just before navigation)
     const skipDelays = !!opts.immediate;
     // Self-contained (this function has no student/uid parameter): captured so Phase 2 can
-    // detect if Moodle navigated away before it runs and skip writing remarks to what would
-    // now be a different student's textareas.
+    // detect if Moodle silently navigated away mid-Phase-1 (see the inter-click await below)
+    // and skip writing remarks to what would now be a different student's textareas.
     const startUid = /** @type {HTMLSelectElement|null} */(
       document.querySelector('select#change-user-select, select[data-action="change-user"]')
     )?.value?.trim() || '';
-    // ── Phase 1: locate each rubric level cell ────────────────────────────────
-    // Build a map of criterionIndex → {row, cid} for use in Phase 2. This used to also
-    // synthetically click each cell to visually highlight the AI's selections on the live
-    // page — removed. That clicking is the one thing this function did that touches the
-    // same "is this rubric complete" state Moodle's own auto-advance logic watches, and it
-    // turned out to leave whichever student it ran on stuck: every subsequent attempt to
-    // navigate away from that specific student (in either direction, via any button, even
-    // after a fresh regrade) re-triggered a rapid navigation loop inside Moodle's own AMD
-    // event dispatch, un-fixable by anything watching from our side — only escapable by
-    // closing the panel entirely. Grade-saving itself was never at risk: postGrade sets the
-    // rubric's hidden form-field values directly and posts via AJAX, independent of this
-    // function and of whether any cell here is visually marked. The cost of removing the
-    // clicking is cosmetic only — the instructor won't see cells highlighted on Moodle's own
-    // page in real time after posting; the grade is still correct on refresh/next visit.
+    // ── Phase 1: mark ALL rubric level cells first ────────────────────────────
+    // Build a map of criterionIndex → {row, cid} for use in Phase 2.
+    // We click ALL cells before Phase 2 runs, because some Moodle AMD themes
+    // only render the remark <textarea> after a level cell is selected.
+    //
+    // A short await after each click (not gated on skipDelays — this isn't a
+    // "retry", it's letting each click settle) matters because Moodle's own
+    // "is the rubric now complete, should I auto-advance?" check appears to be
+    // debounced rather than fully synchronous: firing every cell's click() back
+    // to back in the same JS tick (the old behavior) could queue several
+    // redundant completion-checks that each independently fire navigation once
+    // they finally run, once we'd already finished clicking every cell —
+    // observed as the grading form (TinyMCE included) repeatedly tearing down
+    // and rebuilding, and the Prev/Next buttons flickering, from a single post.
     /** @type {Map<number, {row: HTMLElement|null, cid: string|null}>} */
     const rowMap = new Map();
     for (const score of result.scores || []) {
@@ -146,6 +145,37 @@
 
       const row = /** @type {HTMLElement|null} */(cell.closest('tr.criterion, tr, [class*="criterion"]'));
 
+      // If this level is already selected, leave it — avoid triggering Moodle's
+      // toggle-off logic when we click a cell that already has 'checked'.
+      const alreadySelected = cell.classList.contains('checked')
+                           || cell.getAttribute('aria-checked') === 'true';
+      if (!alreadySelected) {
+        // Clear sibling cells first (excluding target so the click fires on uncheckd state).
+        if (row) {
+          for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+            if (sib !== cell) {
+              sib.classList.remove('checked', 'selected', 'currentlevel');
+              sib.removeAttribute('aria-checked');
+            }
+          }
+        }
+        try { cell.click(); } catch {}
+        // Manual fallback: if Moodle's handler didn't add 'checked' (no click handler on this build)
+        if (!cell.classList.contains('checked') && cell.getAttribute('aria-checked') !== 'true') {
+          if (row) {
+            for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+              sib.classList.remove('checked', 'selected', 'currentlevel');
+              sib.removeAttribute('aria-checked');
+            }
+          }
+          cell.classList.add('checked');
+          cell.setAttribute('aria-checked', 'true');
+        }
+        // Let Moodle's own click handler (and any debounced completion-check it
+        // schedules) settle before the next cell's click fires — see the note above.
+        await sleep(60);
+      }
+
       const cid = criterion?.criterionId
                || (cell.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1]
                || /** @type {any} */(cell).dataset?.criterionid
@@ -156,13 +186,13 @@
         );
         if (inp) inp.value = String(matchedLevel.id);
       }
-      console.log('[MAG] Located level cell for', matchedLevel.id, '(not clicked — see note above)');
+      console.log('[MAG] Applied level', matchedLevel.id, '→', cell.id || /** @type {any} */(cell).dataset?.levelid);
       rowMap.set(score.criterionIndex, { row, cid });
     }
 
-    // Moodle may have navigated away for some other reason while Phase 1 ran (e.g. the
-    // user clicked away manually). If so, the live page now belongs to someone else —
-    // writing Phase 2's remarks there would corrupt a different student's form.
+    // Completing the rubric in Phase 1 can itself trigger Moodle's own auto-advance to the
+    // next student. If that happened, the live page now belongs to someone else — writing
+    // Phase 2's remarks there would corrupt a different student's form.
     if (startUid) {
       const nowUid = /** @type {HTMLSelectElement|null} */(
         document.querySelector('select#change-user-select, select[data-action="change-user"]')
@@ -175,7 +205,7 @@
 
     // ── Phase 2: write justifications to remark textareas ────────────────────
     // Runs immediately AND again after 700 ms (in case AMD reveals textareas
-    // asynchronously after the page settles).
+    // asynchronously after the cell clicks above).
     // Four strategies per criterion, falling back to positional DOM order.
     const writeRemarks = () => {
       if (!CFG.postRemarks) return;
@@ -3660,15 +3690,17 @@ Check: same variable names, identical code logic, same written arguments, same p
         const isAutoPost = autoGradeThisPost;
         autoGradeThisPost = false;
         if (isAutoPost) {
-          // Awaited (not fire-and-forget), then a short settle for Moodle's own state to
-          // catch up before reading it below.
+          // Awaited (not fire-and-forget) — applyResultToLiveDom now pauses briefly between
+          // each rubric cell click, so a fixed guess at how long that takes is no longer
+          // reliable for rubrics with many criteria. Await the real completion, then a
+          // shorter settle for Moodle's own state to catch up.
           await applyResultToLiveDom(rubric, editedResult, { immediate: true });
           await sleep(200);
-          // Guard: applyResultToLiveDom no longer clicks any rubric cells (see its own
-          // comment for why), but Moodle could still have navigated away for some other
-          // reason while we were posting/applying. Clicking saveandshownext on the wrong
-          // page would save a blank form over a different student. Only click if we're
-          // still on this student's page.
+          // Guard: if Moodle has "auto-advance after rubric" enabled, clicking the final
+          // rubric cell already saved the grade AND navigated to the next student. In that
+          // case clicking saveandshownext would fire on the *next* student's page, saving
+          // their blank form and kicking off an uncontrolled cascade.
+          // Only click if we are still on this student's page.
           const _nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
             'select#change-user-select, select[data-action="change-user"]'
           ))?.value?.trim() || '';
