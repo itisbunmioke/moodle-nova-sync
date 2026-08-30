@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.68
+// @version      2.5.69
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4517,13 +4517,23 @@ Check: same variable names, identical code logic, same written arguments, same p
         recentNavTimestamps.push(now);
         while (recentNavTimestamps.length && now - recentNavTimestamps[0] > NAV_RATE_LIMIT_WINDOW_MS) recentNavTimestamps.shift();
         if (recentNavTimestamps.length > NAV_RATE_LIMIT_MAX) {
-          console.error('[MAG] Runaway navigation detected —', recentNavTimestamps.length, 'switches in', NAV_RATE_LIMIT_WINDOW_MS, 'ms. Pausing navigation tracking for', NAV_COOLDOWN_MS / 1000, 's.');
+          console.error('[MAG] Runaway navigation detected —', recentNavTimestamps.length, 'switches in', NAV_RATE_LIMIT_WINDOW_MS, 'ms. Nudging via previous-user and pausing for', NAV_COOLDOWN_MS / 1000, 's.');
           recentNavTimestamps.length = 0;
           navCooldownUntil = now + NAV_COOLDOWN_MS;
           gradeAllActive    = false;
           gradeNRemaining   = 0;
           autoGradeThisPost = false;
-          setStatus('⚠ Rapid navigation loop detected — pausing briefly, the panel will resync automatically.', '#ff9060');
+          setStatus('⚠ Rapid navigation loop detected — recovering automatically…', '#ff9060');
+          // A passive cooldown alone doesn't stop this: console evidence shows the loop is
+          // self-sustained inside Moodle's own AMD event/pubsub dispatch, not anything our
+          // code re-triggers each cycle, so waiting quietly just lets it keep looping
+          // unobserved. A real previous-user navigation is what empirically breaks it —
+          // automate that exact recovery instead of only watching from the sidelines.
+          try {
+            /** @type {HTMLElement|null} */(document.querySelector(
+              '[data-action="previous-user"], [data-action="previoususer"]'
+            ))?.click();
+          } catch {}
           return;
         }
         lastWatchedUid = uid;
