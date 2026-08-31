@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.71
+// @version      2.5.72
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3816,9 +3816,31 @@ Check: same variable names, identical code logic, same written arguments, same p
             // above for why a stale click here is dangerous.
             _cancelLiveTimers();
             if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
-            // Prefer Moodle's own "Save and show next" button: it submits the grading form
-            // and navigates in one step, clearing the "dirty" flag set by applyResultToLiveDom
-            // and bypassing the unsaved-changes confirmation dialog.
+
+            // Try clearing Moodle core's own "unsaved changes" dirty flag (documented API:
+            // M.core_formchangechecker.reset_form_dirty_state) and using the plain next-user
+            // navigation, instead of the compound "save and show next" button below. postGrade
+            // already saved everything via AJAX, so the reset is accurate, not a lie — and it
+            // avoids the one remaining synthetic click in this flow that removing rubric-cell
+            // clicking (v2.5.70, reverted) didn't fix, so is worth ruling in or out on its own.
+            // Only try this when the API is actually present: without it, a plain next-user
+            // click could trigger a real "unsaved changes?" confirm() dialog a script can't
+            // dismiss, hanging the flow — worse than the flicker this is meant to fix.
+            const formChangeChecker = /** @type {any} */(window).M?.core_formchangechecker;
+            if (!formChangeChecker?.reset_form_dirty_state) {
+              console.log('[MAG] Move: M.core_formchangechecker.reset_form_dirty_state not available on this page — using saveandshownext fallback.');
+            } else {
+              try { formChangeChecker.reset_form_dirty_state(); } catch {}
+              const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
+                '[data-action="next-user"], [data-action="nextuser"]'
+              ));
+              if (nextUser) { console.log('[MAG] Move: dirty flag reset, navigating via plain next-user.'); nextUser.click(); return; }
+            }
+
+            // Fallback (formchangechecker unavailable, or its next-user element missing):
+            // Moodle's own "Save and show next" button submits the grading form and navigates
+            // in one step, clearing the "dirty" flag set by applyResultToLiveDom itself and
+            // bypassing the unsaved-changes confirmation dialog.
             const saveAndNext = /** @type {HTMLElement|null} */(document.querySelector(
               'button[name="saveandshownext"], input[name="saveandshownext"], ' +
               '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
@@ -3827,7 +3849,7 @@ Check: same variable names, identical code logic, same written arguments, same p
             if (saveAndNext) {
               saveAndNext.click();
             } else {
-              // Fallback: plain next-user click (may still trigger Moodle's dialog)
+              // Last resort: plain next-user click (may still trigger Moodle's dialog)
               const mNext = /** @type {HTMLElement|null} */(document.querySelector(
                 '[data-action="next-user"], [data-action="nextuser"]'
               ));
