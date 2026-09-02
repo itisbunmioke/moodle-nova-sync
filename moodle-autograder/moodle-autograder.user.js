@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.72
+// @version      2.5.73
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -924,7 +924,15 @@
     const isGraded = !!doc.querySelector(
       '.level.checked, .level[aria-checked="true"], td.level[data-checked="1"]'
     );
-    return { fileLinks, onlineText, realName, isGraded };
+    // For a no-rubric assignment (e.g. a Lab Activity graded "Simple direct grading"/"No
+    // grade" — see gradeSubmission's no-rubric branch) isGraded above is never true, since
+    // there are no rubric levels to check. Existing feedback comment text is the only
+    // available signal there that this student was already handled; the caller picks
+    // between the two based on whether this assignment actually has a rubric.
+    const feedbackTA = doc.querySelector('textarea[name*="assignfeedbackcomments_editor"]')
+                     || doc.querySelector('textarea[id*="assignfeedbackcomments"]');
+    const hasFeedbackComment = !!(feedbackTA && /** @type {HTMLTextAreaElement} */(feedbackTA).value.trim());
+    return { fileLinks, onlineText, realName, isGraded, hasFeedbackComment };
   }
 
   // ── AI prompts ───────────────────────────────────────────────────────────
@@ -1118,10 +1126,11 @@ FORBIDDEN in "feedback":
   }
 
   function buildFeedbackPrompt(title, instructions, rubric, submissionText, scores, instructorName, style) {
-    const rubricText = rubricToText(rubric);
-    const scoreLines = (scores || []).map((/** @type {any} */ s, /** @type {number} */ i) =>
+    const hasRubric = (rubric || []).length > 0;
+    const rubricText = hasRubric ? rubricToText(rubric) : '';
+    const scoreLines = hasRubric ? (scores || []).map((/** @type {any} */ s, /** @type {number} */ i) =>
       `${rubric[i]?.name || 'Criterion ' + i}: ${s.pointsAwarded} pts — ${s.justification}`
-    ).join('\n');
+    ).join('\n') : '';
     return `You are ${instructorName}, leaving a quick grade comment. Style: ${style}.
 Respond ONLY with valid JSON in this exact shape (no markdown, no explanation outside the JSON):
 {
@@ -1135,15 +1144,15 @@ EVIDENCE GROUNDING: an "evidence" value must be an exact quote — the same word
 
 ASSIGNMENT: ${title}
 INSTRUCTIONS: ${instructions}
-
+${hasRubric ? `
 RUBRIC:
 ${rubricText}
 
 SCORES:
 ${scoreLines}
-
+` : ''}
 STUDENT SUBMISSION:
-${submissionText || '[File submission — base feedback on rubric scores and assignment instructions]'}
+${submissionText || '[File submission — base feedback on the assignment instructions]'}
 
 PICK ONE writing mode that fits this submission. Do not name or signal which one you chose:
 
@@ -1932,7 +1941,25 @@ Your response is the JSON object described above, and nothing else. Do not expla
   }
 
   async function gradeSubmission(/** @type {string} */ title, /** @type {string} */ instructions, /** @type {any[]} */ rubric, /** @type {string} */ submissionText, /** @type {any} */ inlineData, /** @type {string[]} */ submittedFiles = []) {
-    const sub            = truncateSubmission(submissionText);
+    const sub = truncateSubmission(submissionText);
+
+    // No rubric configured on this assignment (e.g. a Lab Activity graded "Simple direct
+    // grading" or "No grade" rather than "Rubric") — there's nothing to score. Sending
+    // buildCombinedPrompt's rubric-shaped prompt here would just make the AI explain, in a
+    // score justification nobody sees, that it has nothing to score against. Skip the
+    // scoring call entirely and generate feedback only, via the same feedback-only path
+    // already used for large (split-mode) submissions.
+    if (!rubric || rubric.length === 0) {
+      const feedPrompt = buildFeedbackPrompt(title, instructions, rubric, sub, [], CFG.instructorName, CFG.instructorStyle);
+      const feedback   = await generateGroundedFeedback(feedPrompt, CFG.useClaudeForFeedback && CFG.claudeKey, sub);
+      return {
+        scores:         [],
+        totalPoints:    0,
+        overallComment: '',
+        feedback:       stripBannedPhrases(verifyNumericClaims(sanitizeFeedback([], rubric, feedback), sub)),
+      };
+    }
+
     const combinedPrompt = buildCombinedPrompt(title, instructions, rubric, sub, CFG.instructorName, CFG.instructorStyle, submittedFiles);
 
     // Estimate whether the combined prompt fits within HuggingFace's 8 K context (the tightest provider).
@@ -3412,7 +3439,8 @@ Check: same variable names, identical code logic, same written arguments, same p
     document.addEventListener('mouseup', onUp);
   });
 
-  function getPostBtnLabel() {
+  function getPostBtnLabel(/** @type {boolean} */ hasRubric = true) {
+    if (!hasRubric) return 'Post Feedback'; // no rubric — nothing graded, no per-criterion remarks
     const fb = CFG.postFeedback, rm = CFG.postRemarks;
     if (fb && rm) return 'Post Grade, Feedback & Remarks';
     if (fb)       return 'Post Grade & Feedback';
@@ -3452,6 +3480,7 @@ Check: same variable names, identical code logic, same written arguments, same p
 
     const statusClass = result ? (result.error ? 'error' : 'done') : 'pending';
     const statusText  = result ? (result.error ? '✗ Error' : result.moodleGraded ? 'Graded in Moodle' : '✓ Graded') : '○ Pending';
+    const hasRubric   = (rubric || []).length > 0;
 
     // Scale raw rubric points to the 100-point Moodle grade.
     // Compute rawTotal from individual scores — never trust the AI's totalPoints field.
@@ -3471,7 +3500,9 @@ Check: same variable names, identical code logic, same written arguments, same p
         ? `<div style="color:#ff7070;font-size:12px">⚠ ${result.error}</div>`
         : result.moodleGraded
           ? `<div style="padding:8px 0"><button class="mag-regrade-btn" id="mag-regrade-${student.uid}">Regrade submission?</button></div>`
-          : `
+          : !hasRubric
+            ? `<div style="color:#9070c0;font-size:12px">No rubric on this assignment — feedback only, no grade will be posted.</div>`
+            : `
       <table class="mag-scores-table">
         <thead><tr><th>Criterion</th><th>Score</th><th>Justification</th></tr></thead>
         <tbody>
@@ -3513,7 +3544,7 @@ Check: same variable names, identical code logic, same written arguments, same p
     card.innerHTML = `
       <div class="mag-card-header">
         <span class="mag-card-name">${student.name}</span>
-        ${result && !result.error && !result.moodleGraded ? `<span class="mag-card-total" id="mag-total-${student.uid}">${scaled100} / 100</span>` : ''}
+        ${result && !result.error && !result.moodleGraded && hasRubric ? `<span class="mag-card-total" id="mag-total-${student.uid}">${scaled100} / 100</span>` : ''}
         <span class="mag-card-status ${statusClass}" id="mag-status-${student.uid}">${statusText}</span>
       </div>
       <div class="mag-card-body" id="mag-body-${student.uid}">
@@ -3522,7 +3553,7 @@ Check: same variable names, identical code logic, same written arguments, same p
         ${result && !result.error && !result.moodleGraded ? `
           <div class="mag-card-actions">
             <div id="mag-post-wrap-${student.uid}" style="display:flex;gap:8px;align-items:center">
-              <button class="mag-post-btn" id="mag-post-${student.uid}">${getPostBtnLabel()}</button>
+              <button class="mag-post-btn" id="mag-post-${student.uid}">${getPostBtnLabel(hasRubric)}</button>
               <button class="mag-skip-btn" id="mag-skip-${student.uid}">Skip</button>
             </div>
             <div class="mag-post-progress" id="mag-postprog-${student.uid}">
@@ -4461,7 +4492,10 @@ Check: same variable names, identical code logic, same written arguments, same p
         // midUid as a new value and trigger onMoodleNavigated(midUid) on its next tick.
         const midUid = getMoodleUid() || new URL(location.href).searchParams.get('userid') || '';
         if (midUid && midUid !== newUid) { return; }
-        gradedInMoodle = fetched.isGraded;
+        // No-rubric assignments (see gradeSubmission's no-rubric branch) never have
+        // checked rubric levels to detect via fetched.isGraded — fall back to existing
+        // feedback comment text as the "already handled" signal in that case.
+        gradedInMoodle = (rubric && rubric.length > 0) ? fetched.isGraded : fetched.hasFeedbackComment;
         // Update name now so the card built below is correct immediately.
         if (fetched.realName && student.name !== fetched.realName) {
           student.name = fetched.realName;
