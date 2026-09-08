@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.76
+// @version      2.5.77
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1525,7 +1525,10 @@ Your response is the JSON object described above, and nothing else. Do not expla
       throw new Error(`Cloudflare [${r.status}]: ${msg}`);
     }
     const content = data.result?.response;
-    if (!content) throw new Error('Cloudflare: empty response content');
+    if (typeof content !== 'string' || !content.trim()) {
+      console.warn('[MAG] Cloudflare: unexpected response shape:', JSON.stringify(data).slice(0, 500));
+      throw new Error(`Cloudflare: unexpected/empty response shape (HTTP ${r.status})`);
+    }
     return content;
   }
 
