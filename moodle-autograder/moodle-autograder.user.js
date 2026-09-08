@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.73
+// @version      2.5.74
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3773,6 +3773,10 @@ Check: same variable names, identical code logic, same written arguments, same p
         // Re-apply after 2 s in case Moodle's AMD re-rendered the panel.
         // Tracked so navigation can cancel it before it fires on the next student's page.
         _trackTimer(() => applyResultToLiveDom(rubric, editedResult), 2000);
+        // applyResultToLiveDom's Phase 2 (remarks/feedback) schedules its own staggered
+        // retries up to 1500ms out. Stay/Move below wait until this point before letting
+        // Moodle process a save+navigate — see the comment on that wait for why.
+        const applyPassesSettleBy = Date.now() + 1500;
 
         // Show Done / Stay / Move row after successful post
         const resultRow = /** @type {HTMLElement|null} */(document.getElementById(`mag-result-row-${student.uid}`));
@@ -3826,9 +3830,14 @@ Check: same variable names, identical code logic, same written arguments, same p
             return !nowUid || nowUid === student.uid;
           };
 
-          if (stayBtn) stayBtn.onclick = () => {
+          if (stayBtn) stayBtn.onclick = async () => {
             cancelTimer();
             if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
+            // Let applyResultToLiveDom's pending write passes actually finish before this
+            // click reaches Moodle — see moveBtn's onclick below for why.
+            const wait = applyPassesSettleBy - Date.now();
+            if (wait > 0) await sleep(wait);
+            if (!stillOnThisStudent()) return;
             // Click Moodle's own "Save changes" button — re-submits the live form (which
             // applyResultToLiveDom already filled), clears the "dirty" flag, and stays on
             // this student without navigation. Same logic as Save & Move / saveandshownext.
@@ -3840,13 +3849,26 @@ Check: same variable names, identical code logic, same written arguments, same p
             if (doneBtn) { doneBtn.textContent = 'Done ✓'; doneBtn.onclick = () => reviewOverlay.classList.remove('open'); }
           };
 
-          if (moveBtn) moveBtn.onclick = () => {
+          if (moveBtn) moveBtn.onclick = async () => {
             cancelTimer();
-            // Cancel the pending 2-second applyResultToLiveDom retry (scheduled when the
-            // grade was first posted, above) before navigating away — see stillOnThisStudent
-            // above for why a stale click here is dangerous.
-            _cancelLiveTimers();
             if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
+
+            // Console evidence (v2.5.72) showed Moodle's OWN GradingPanel code throwing an
+            // uncaught exception in its post-save dirty-flag cleanup (getFormFromChild
+            // reading .closest on undefined), immediately followed by the navigation storm —
+            // this looks like a genuine bug in Moodle's grading panel JS, exposed by
+            // navigating while our own feedback/remark writes (applyResultToLiveDom Phase 2,
+            // staggered up to 1500ms out) are still in flight. Let those actually finish —
+            // not cancel them — before this click reaches Moodle, so its internal state has
+            // settled by the time it processes a save+navigate.
+            const wait = applyPassesSettleBy - Date.now();
+            if (wait > 0) await sleep(wait);
+            if (!stillOnThisStudent()) return; // re-check: Moodle may have moved on during the wait
+
+            // NOW cancel the pending 2-second full-reapply retry (scheduled when the grade
+            // was first posted, above) — this one we do want stopped before navigating away,
+            // unlike the passes just waited for above.
+            _cancelLiveTimers();
 
             // Try clearing Moodle core's own "unsaved changes" dirty flag (documented API:
             // M.core_formchangechecker.reset_form_dirty_state) and using the plain next-user
