@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.78
+// @version      2.5.79
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1819,7 +1819,12 @@ Your response is the JSON object described above, and nothing else. Do not expla
         console.warn('[MAG] Dropped feedback sentence (evidence quote not found verbatim in submission):', text, '| claimed evidence:', evidence);
         continue;
       }
-      kept.push(text);
+      // Each array item is meant to read as its own sentence, but the model doesn't always
+      // include terminal punctuation — join()'d as-is that produces run-on, unpunctuated
+      // feedback ("...correctly But it's not clear..."), and it also breaks downstream
+      // sentence-boundary splitting (splitSentences/stripBannedPhrases) which relies on
+      // .!? to tell items apart.
+      kept.push(/[.!?]["')\]]?$/.test(text) ? text : text + '.');
     }
     return kept.join(' ').trim();
   }
