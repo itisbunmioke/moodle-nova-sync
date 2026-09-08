@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.74
+// @version      2.5.75
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -78,16 +78,28 @@
   if (!assignId || !pageAction || pageAction === 'view') return;
 
   // ── Moodle AJAX helpers ──────────────────────────────────────────────────
+  // Both values are stable for the whole session on one assignment — cached so a live
+  // DOM query that transiently comes up empty (e.g. caught mid-re-render of Moodle's own
+  // AMD grading-navigation/grade panels, which carry these attributes) falls back to the
+  // last known-good value instead of failing outright with "Cannot read assignmentId or
+  // sesskey from the page."
+  let _cachedSesskey     = '';
+  let _cachedAssignDbId  = /** @type {string|null} */ (null);
+
   function getSesskey() {
-    return /** @type {any} */(window).M?.cfg?.sesskey
+    const live = /** @type {any} */(window).M?.cfg?.sesskey
         || document.querySelector('input[name=sesskey]')?.value || '';
+    if (live) _cachedSesskey = live;
+    return live || _cachedSesskey;
   }
 
   // Returns the assignment DB ID from data-assignmentid attributes.
   // Different from the course-module ID in the URL (?id=602901).
   // Moodle web service calls need the DB ID (e.g. 93694), not the cmid.
   function getAssignmentDbId() {
-    return document.querySelector('[data-assignmentid]')?.getAttribute('data-assignmentid') || null;
+    const live = document.querySelector('[data-assignmentid]')?.getAttribute('data-assignmentid') || null;
+    if (live) _cachedAssignDbId = live;
+    return live || _cachedAssignDbId;
   }
 
   // Tracks setTimeout IDs created by applyResultToLiveDom and the Grade One 2-second re-apply.
