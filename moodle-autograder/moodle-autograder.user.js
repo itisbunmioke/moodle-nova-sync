@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.75
+// @version      2.5.76
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -14,6 +14,7 @@
 // @connect      *
 // @connect      generativelanguage.googleapis.com
 // @connect      api.anthropic.com
+// @connect      api.cloudflare.com
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @require      https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js
 // @require      https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js
@@ -34,6 +35,9 @@
   const CLAUDE_MODEL         = 'claude-haiku-4-5-20251001';
   const GROQ_ENDPOINT        = 'https://api.groq.com/openai/v1/chat/completions';
   const GROQ_DEFAULT         = 'llama-3.3-70b-versatile';
+  const CLOUDFLARE_ENDPOINT  = /** @param {string} acct @param {string} m */ (acct, m) =>
+    `https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${m}`;
+  const CLOUDFLARE_DEFAULT   = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
   const MISTRAL_ENDPOINT     = 'https://api.mistral.ai/v1/chat/completions';
   const MISTRAL_DEFAULT      = 'mistral-small-latest';
   const OPENROUTER_DEFAULT   = 'deepseek/deepseek-chat-v3-0324:free';
@@ -51,6 +55,9 @@
     get geminiModel()         { return get('gemini_model', GEMINI_DEFAULT); },
     get groqKey()             { return get('groq_key'); },
     get groqModel()           { return get('groq_model', GROQ_DEFAULT); },
+    get cloudflareAccountId() { return get('cloudflare_account_id'); },
+    get cloudflareKey()       { return get('cloudflare_key'); },
+    get cloudflareModel()     { return get('cloudflare_model', CLOUDFLARE_DEFAULT); },
     get mistralKey()          { return get('mistral_key'); },
     get mistralModel()        { return get('mistral_model', MISTRAL_DEFAULT); },
     get openrouterKey()       { return get('openrouter_key'); },
@@ -1497,6 +1504,32 @@ Your response is the JSON object described above, and nothing else. Do not expla
   }
 
   /** @param {string} promptText */
+  async function callCloudflare(promptText) {
+    const acct = CFG.cloudflareAccountId;
+    const key  = CFG.cloudflareKey;
+    if (!acct || !key) throw new Error('Cloudflare account ID / API token not configured.');
+    const body = JSON.stringify({
+      messages:    [{ role: 'user', content: promptText }],
+      max_tokens:  2048,
+      temperature: 0.3,
+    });
+    const r = await xhr('POST', CLOUDFLARE_ENDPOINT(acct, CFG.cloudflareModel), {
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body,
+    });
+    if (r.status === 0) throw new Error('Cloudflare: request blocked (status 0)');
+    if (!r.responseText) throw new Error(`Cloudflare: empty response (HTTP ${r.status})`);
+    const data = JSON.parse(r.responseText);
+    if (!data.success) {
+      const msg = (data.errors || []).map(e => e.message || e).join('; ') || `HTTP ${r.status}`;
+      throw new Error(`Cloudflare [${r.status}]: ${msg}`);
+    }
+    const content = data.result?.response;
+    if (!content) throw new Error('Cloudflare: empty response content');
+    return content;
+  }
+
+  /** @param {string} promptText */
   async function callOllama(promptText) {
     const body = JSON.stringify({
       model: CFG.ollamaModel,
@@ -1593,7 +1626,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     return JSON.parse(match[0]);
   }
 
-  // callAI: Gemini → OpenRouter → Ollama (local) → HuggingFace
+  // callAI: Gemini → OpenRouter → Mistral → Groq → Cloudflare → Ollama (local) → HuggingFace
   // Order reflects quality / context-window for academic rubric grading.
   /** @param {string} prompt @param {object|null} [inlineData] */
   async function callAI(prompt, inlineData = null) {
@@ -1629,6 +1662,12 @@ Your response is the JSON object described above, and nothing else. Do not expla
         } else {
           setStatus(`Groq failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
         }
+      }
+    }
+    if (CFG.cloudflareAccountId && CFG.cloudflareKey) {
+      try { return await callCloudflare(textPrompt); } catch (e) {
+        lastErr = /** @type {Error} */(e);
+        setStatus(`Cloudflare failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
       }
     }
     if (CFG.ollamaEnabled) {
@@ -2875,6 +2914,21 @@ Check: same variable names, identical code logic, same written arguments, same p
         <div class="mag-hint">Default: llama-3.3-70b-versatile. Also available: llama-4-scout, kimi-k2. Text-only — no PDFs.</div>
       </div>
       <div class="mag-field">
+        <label>Cloudflare Account ID <em style="opacity:.6">(5th — free tier, ~10K neurons/day, Llama 70B)</em></label>
+        <input type="text" id="mag-s-cloudflare-acct" placeholder="32-char hex" style="font-family:monospace;font-size:0.85em">
+        <div class="mag-hint">Free account: <strong>dash.cloudflare.com</strong> → Workers AI. Account ID is on the dashboard's right sidebar (any Cloudflare account, no billing setup needed for the free daily allowance).</div>
+      </div>
+      <div class="mag-field">
+        <label>Cloudflare API Token</label>
+        <input type="password" id="mag-s-cloudflare" placeholder="...">
+        <div class="mag-hint">Dashboard → My Profile → API Tokens → Create Token → "Workers AI" template.</div>
+      </div>
+      <div class="mag-field">
+        <label>Cloudflare model</label>
+        <input type="text" id="mag-s-cloudflare-model" placeholder="@cf/meta/llama-3.3-70b-instruct-fp8-fast">
+        <div class="mag-hint">Default: llama-3.3-70b-instruct-fp8-fast (same model family as Groq). ~10,000 neurons/day free, resets daily at 00:00 UTC.</div>
+      </div>
+      <div class="mag-field">
         <label><input type="checkbox" id="mag-s-ollama"> Use Ollama (4th — local &amp; offline, free, requires Ollama on localhost:11434)</label>
         <div class="mag-hint">Install: <strong>ollama.com</strong> → run <code>ollama pull phi4</code> (or any model).</div>
       </div>
@@ -2937,6 +2991,9 @@ Check: same variable names, identical code logic, same written arguments, same p
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-mistral-model')).value   = CFG.mistralModel;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value             = CFG.groqKey;
     /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value       = CFG.groqModel;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-cloudflare-acct')).value  = CFG.cloudflareAccountId;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-cloudflare')).value       = CFG.cloudflareKey;
+    /** @type {HTMLInputElement} */(document.getElementById('mag-s-cloudflare-model')).value = CFG.cloudflareModel;
     document.getElementById('mag-s-claude').value       = CFG.claudeKey;
     document.getElementById('mag-s-use-claude').checked = CFG.useClaudeForFeedback;
     document.getElementById('mag-s-name').value     = CFG.instructorName;
@@ -3204,6 +3261,9 @@ Check: same variable names, identical code logic, same written arguments, same p
     set('mistral_model',    (/** @type {HTMLInputElement} */(document.getElementById('mag-s-mistral-model')).value.trim()) || MISTRAL_DEFAULT);
     set('groq_key',         /** @type {HTMLInputElement} */(document.getElementById('mag-s-groq')).value.trim());
     set('groq_model',       (/** @type {HTMLInputElement} */(document.getElementById('mag-s-groq-model')).value.trim()) || GROQ_DEFAULT);
+    set('cloudflare_account_id', /** @type {HTMLInputElement} */(document.getElementById('mag-s-cloudflare-acct')).value.trim());
+    set('cloudflare_key',        /** @type {HTMLInputElement} */(document.getElementById('mag-s-cloudflare')).value.trim());
+    set('cloudflare_model',      (/** @type {HTMLInputElement} */(document.getElementById('mag-s-cloudflare-model')).value.trim()) || CLOUDFLARE_DEFAULT);
     set('claude_key',      document.getElementById('mag-s-claude').value.trim());
     set('claude_feedback', document.getElementById('mag-s-use-claude').checked ? 'true' : 'false');
     set('instructor_name', document.getElementById('mag-s-name').value.trim() || 'Instructor');
