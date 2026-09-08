@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.5.79
+// @version      2.6.0
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -493,6 +493,121 @@
     }
   }
 
+  // Extract structural content from a Tableau Packaged Workbook (.twbx) — a ZIP containing
+  // a .twb file (plain, fully-readable XML per Tableau's own published schema) plus a
+  // Data/ folder of binary extracts (.hyper — not parseable here, not needed: the .twb
+  // carries everything individually-authored). Deliberately does NOT dump the full
+  // datasource column list — every student shares the same dataset, so that content is
+  // identical regardless of authorship and would only pollute plagiarism-similarity scoring
+  // without telling you anything about what the student actually built.
+  function twbxToText(/** @type {ArrayBuffer} */ buffer) {
+    try {
+      const fflate = /** @type {any} */ (window).fflate;
+      const inner  = fflate.unzipSync(new Uint8Array(buffer));
+      const twbName = Object.keys(inner).find(n => /\.twb$/i.test(n) && !n.includes('/'))
+                    || Object.keys(inner).find(n => /\.twb$/i.test(n));
+      if (!twbName) return '[TABLEAU WORKBOOK — no .twb file found inside .twbx]';
+
+      const xmlText = new TextDecoder('utf-8', { fatal: false }).decode(inner[twbName]);
+      const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+      if (doc.querySelector('parsererror')) return '[TABLEAU WORKBOOK — .twb XML could not be parsed]';
+
+      const worksheets = [...doc.querySelectorAll('worksheet')]
+        .map(w => w.getAttribute('name')).filter(Boolean);
+
+      const dashboards = [...doc.querySelectorAll('dashboard')].map(d => {
+        const name  = d.getAttribute('name') || '(unnamed)';
+        const zones = [...d.querySelectorAll('zone[name]')].map(z => z.getAttribute('name')).filter(Boolean);
+        return zones.length ? `${name} (contains: ${zones.join(', ')})` : name;
+      });
+
+      // Calculated fields: <column caption="..." name="..."><calculation formula="..."/></column>
+      // — the formula text is the single most diagnostic thing in a Tableau workbook, both
+      // for grading (did they compute the right thing) and for plagiarism (there are many
+      // syntactically different ways to express the same result; verbatim matches are not
+      // something independent students converge on by chance).
+      const calcs = [...doc.querySelectorAll('column')]
+        .map(col => {
+          const calc = col.querySelector('calculation[formula]');
+          if (!calc) return null;
+          const label = col.getAttribute('caption') || col.getAttribute('name') || '(unnamed)';
+          return `"${label}" = ${calc.getAttribute('formula')}`;
+        })
+        .filter(Boolean)
+        .slice(0, 40);
+
+      const filters = [...doc.querySelectorAll('filter')].map(f => {
+        const col  = f.getAttribute('column') || '?';
+        const cls  = f.getAttribute('class') || '';
+        const vals = f.getAttribute('included-values');
+        return vals ? `${col} (${cls}, includes: ${vals})` : `${col} (${cls})`;
+      }).slice(0, 25);
+
+      const parts = ['[TABLEAU WORKBOOK]'];
+      if (worksheets.length) parts.push(`Worksheets: ${worksheets.join(', ')}`);
+      if (dashboards.length) parts.push(`Dashboards: ${dashboards.join(' | ')}`);
+      if (calcs.length)      parts.push(`Calculated Fields:\n${calcs.map(c => '  - ' + c).join('\n')}`);
+      if (filters.length)    parts.push(`Filters:\n${filters.map(f => '  - ' + f).join('\n')}`);
+      if (parts.length === 1) parts.push('(no worksheets, dashboards, calculated fields, or filters found)');
+      return parts.join('\n\n');
+    } catch (e) {
+      return `[TABLEAU WORKBOOK — could not parse: ${/** @type {any} */(e).message}]`;
+    }
+  }
+
+  // Extract structural content from a Power BI report (.pbix) — a ZIP whose Report/Layout
+  // entry is a UTF-16LE-encoded JSON file (confirmed: Power BI requires this exact encoding
+  // or the file won't reopen) describing pages and visuals. The actual data model — DAX
+  // measures, calculated columns, relationships, cached data — lives in a proprietary binary
+  // tabular-model format (the same one Analysis Services uses) that is not reasonably
+  // parseable in a browser userscript, so grading is necessarily limited to what the report
+  // layout exposes: page structure, visual types, titles, and the fields each visual is
+  // bound to. That limitation is stated in the extracted text itself so the grading prompt
+  // sees it directly, not just in a separate instruction the model might not connect.
+  // Per-visual config parsing is best-effort — Microsoft doesn't publish this JSON shape,
+  // so a shape mismatch on one visual degrades to a plain type label rather than failing
+  // the whole page (same defensive posture as callCloudflare's response-shape handling).
+  function pbixToText(/** @type {ArrayBuffer} */ buffer) {
+    try {
+      const fflate = /** @type {any} */ (window).fflate;
+      const inner  = fflate.unzipSync(new Uint8Array(buffer));
+      const layoutName = Object.keys(inner).find(n => /^report\/layout$/i.test(n));
+      if (!layoutName) return '[POWER BI REPORT — no Report/Layout entry found inside .pbix]';
+
+      let raw = new TextDecoder('utf-16le').decode(inner[layoutName]);
+      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1); // strip BOM if TextDecoder left it in
+      const layout = JSON.parse(raw);
+
+      const pages = (layout.sections || []).map((/** @type {any} */ section) => {
+        const pageName = section.displayName || section.name || '(unnamed page)';
+        const visuals = (section.visualContainers || []).map((/** @type {any} */ vc) => {
+          try {
+            const cfg    = JSON.parse(vc.config || '{}');
+            const sv     = cfg.singleVisual || {};
+            const vType  = sv.visualType || '(unknown type)';
+            const title  = (sv.vcObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value || '')
+                           .replace(/^'|'$/g, '') || null;
+            const fields = [...new Set(
+              (sv.prototypeQuery?.Select || [])
+                .map((/** @type {any} */ s) => s.Name || s.NativeReferenceName || s.Property)
+                .filter(Boolean)
+            )];
+            const label = title ? `"${title}" (${vType})` : `(${vType})`;
+            return fields.length ? `${label} — fields: ${fields.join(', ')}` : label;
+          } catch {
+            return '(visual — could not parse config)';
+          }
+        });
+        return visuals.length ? `${pageName}:\n${visuals.map((/** @type {string} */ v) => '  - ' + v).join('\n')}` : `${pageName}: (no visuals)`;
+      });
+
+      if (!pages.length) return '[POWER BI REPORT — layout contained no pages]';
+      return `[POWER BI REPORT]\nNote: only report layout (pages/visuals/fields) is visible here — DAX measures, calculated columns, and the underlying data model are stored in a binary format and are not inspectable. Do not assess or claim anything about formula/measure correctness for this submission.\n\n${pages.join('\n\n')}`;
+    } catch (e) {
+      return `[POWER BI REPORT — could not parse: ${/** @type {any} */(e).message}]`;
+    }
+  }
+
   // Distribute a char budget across beginning, middle, and end of a text block.
   // Front-only truncation hides later slides, PDF body sections, and tail code —
   // sampling all three thirds keeps the full document representatively visible.
@@ -516,7 +631,7 @@
   async function extractZip(/** @type {ArrayBuffer} */ buffer) {
     const fflate = /** @type {any} */ (window).fflate;
     if (!fflate) throw new Error('fflate library not loaded — check @require header');
-    const SUPPORTED      = new Set(['py','ipynb','csv','txt','md','r','sql','json','pdf','docx','xlsx','xls','pptx']);
+    const SUPPORTED      = new Set(['py','ipynb','csv','txt','md','r','sql','json','pdf','docx','xlsx','xls','pptx','twbx','pbix']);
     const MAX_FILE_BYTES = 50 * 1024 * 1024;
     const MAX_CSV_LINES  = 300;
     const MAX_PER_FILE   = 8000;
@@ -608,6 +723,10 @@
           } catch (e) {
             text = `[PRESENTATION — could not parse slides: ${/** @type {any} */(e).message}]`;
           }
+        } else if (ext === 'twbx') {
+          text = twbxToText(ab);
+        } else if (ext === 'pbix') {
+          text = pbixToText(ab);
         } else {
           text = bufferToText(ab);
         }
@@ -635,6 +754,17 @@
     const isZip  = ext === 'zip';
     const { buffer, mime } = await fetchFile(fileUrl, isZip ? 180000 : 60000); // ZIPs get 3 min
 
+    // .twbx/.pbix are themselves ZIP containers — a generic zip-mime sniff on the server
+    // could otherwise route them into the generic extractZip path below, which only looks
+    // for gradable extensions *inside* a ZIP and would silently return nothing for these
+    // (a .twb / Report-Layout entry doesn't match extractZip's SUPPORTED extension list).
+    // Check these extensions first so they always reach their dedicated parsers.
+    if (ext === 'twbx') {
+      return { text: twbxToText(buffer), inlineData: null };
+    }
+    if (ext === 'pbix') {
+      return { text: pbixToText(buffer), inlineData: null };
+    }
     if (isZip || mime.includes('zip') || mime.includes('x-zip')) {
       const { text: zipText, innerFilenames } = await extractZip(buffer);
       return { text: zipText, inlineData: null, innerFilenames };
@@ -979,11 +1109,15 @@
     const hasDataset      = /\.(csv|xlsx?|xls)\b/.test(fileNamesStr) || sub.includes('[CSV DATASET]') || sub.includes('[SPREADSHEET DATA]');
     const hasDoc          = /\.(pdf|docx?)\b/.test(fileNamesStr) || sub.includes('[PDF WRITTEN SUMMARY]') || sub.includes('[WORD DOCUMENT]');
     const hasPresentation = /\.(pptx?|ppt)\b/.test(fileNamesStr) || sub.includes('[PRESENTATION]');
+    const hasTableau      = /\.twbx\b/.test(fileNamesStr) || sub.includes('[TABLEAU WORKBOOK]');
+    const hasPowerBI      = /\.pbix\b/.test(fileNamesStr) || sub.includes('[POWER BI REPORT]');
     const foundTypes      = [
       hasCode         && 'Python/Jupyter code',
       hasDataset      && 'Dataset (CSV/spreadsheet)',
       hasDoc          && 'Written document (PDF/Word)',
       hasPresentation && 'PowerPoint presentation (.pptx)',
+      hasTableau      && 'Tableau workbook (.twbx)',
+      hasPowerBI      && 'Power BI report (.pbix)',
     ].filter(Boolean);
     // List actual filenames when available — more precise than type labels, and ensures
     // the AI never says a file is missing just because text extraction partially failed.
@@ -1055,9 +1189,18 @@ ${hasPresentation ? `- PRESENTATION REVIEW: Read ALL visible slides before scori
   (b) For each rubric criterion, identify the specific slide number and content (chart, claim, heading, data point) that addresses it. If it genuinely does not appear on any visible slide, state that.
   (c) If omission markers are present between slides, do not claim those slide topics were not covered — they may be in the omitted portion. Only penalise absences you can confirm across all visible slides.
   (d) Assess whether the slide content meaningfully addresses the criterion. A slide with relevant information — even if brief or basic — meets the criterion. Only disqualify a slide if it is genuinely empty (title with no supporting content whatsoever).` : ''}
+${hasTableau ? `- TABLEAU WORKBOOK REVIEW: This is a structural extraction (worksheet/dashboard names, calculated field formulas, filters), not a visual render — you cannot see colors, exact chart appearance, or layout aesthetics, only what was built.
+  (a) Treat calculated field formulas as directly quotable, grounded evidence — the formula text shown is verbatim from the workbook, not a paraphrase.
+  (b) Assess correctness of calculated fields by reading the formula logic itself, not by assuming a name implies correct implementation.
+  (c) Do not penalise for the extraction not showing visual styling (colors, fonts) — that is a tooling limitation, not evidence of absence. Only assess what the extraction actually shows.` : ''}
+${hasPowerBI ? `- POWER BI REPORT REVIEW: This extraction shows only report layout — page names, visual types, titles, and the fields each visual is bound to. DAX measures, calculated columns, and the underlying data model are NOT visible (stored in a binary format this tool cannot read).
+  (a) Do not assess, praise, or penalise DAX formula/measure correctness — you cannot see it. Grade only what is structurally present: which visuals exist, their types, and what fields they reference.
+  (b) Do not claim a measure or calculation is "missing" or "incorrect" — its absence from the extraction does not mean it is absent from the report; it means this tool cannot see the data model layer at all.` : ''}
 ${!hasCode && (instructions.toLowerCase().includes('python') || instructions.toLowerCase().includes('code') || instructions.toLowerCase().includes('.py')) ? '- WARNING: The assignment instructions require code/Python but no code file was found in this submission. Penalise any criteria related to coding or implementation accordingly.' : ''}
 ${!hasDataset && (instructions.toLowerCase().includes('dataset') || instructions.toLowerCase().includes('csv') || instructions.toLowerCase().includes('data')) ? '- WARNING: The assignment instructions require a dataset but none was found in this submission. Penalise any criteria related to data handling accordingly.' : ''}
 ${!hasPresentation && (instructions.toLowerCase().includes('.pptx') || instructions.toLowerCase().includes('presentation') || instructions.toLowerCase().includes('slides') || instructions.toLowerCase().includes('powerpoint')) ? '- WARNING: The assignment instructions require a presentation/slides but none was found. Penalise any criteria related to the presentation accordingly.' : ''}
+${!hasTableau && (instructions.toLowerCase().includes('.twbx') || instructions.toLowerCase().includes('tableau')) ? '- WARNING: The assignment instructions require a Tableau workbook but none was found in this submission. Penalise any criteria related to it accordingly.' : ''}
+${!hasPowerBI && (instructions.toLowerCase().includes('.pbix') || instructions.toLowerCase().includes('power bi') || instructions.toLowerCase().includes('powerbi')) ? '- WARNING: The assignment instructions require a Power BI report but none was found in this submission. Penalise any criteria related to it accordingly.' : ''}
 
 — FEEDBACK RULES (for the "feedback" field) —
 You are ${instructorName || 'the instructor'}, leaving a quick grade comment. Style: ${style || 'conversational'}.
@@ -1724,7 +1867,9 @@ Your response is the JSON object described above, and nothing else. Do not expla
       const ext = (name.split('.').pop() || '').toLowerCase();
       if (['py', 'ipynb'].includes(ext))       return 4; // code: highest priority
       if (['pdf', 'docx', 'doc'].includes(ext)) return 3; // written docs
+      if (ext === 'twbx')                       return 3; // Tableau — formulas/worksheets are dense, gradable content
       if (['pptx', 'ppt'].includes(ext))        return 2; // presentations
+      if (ext === 'pbix')                       return 2; // Power BI — layout only, no formulas visible
       if (['csv', 'xlsx', 'xls'].includes(ext)) return 1; // data (first rows are enough)
       return 2;
     };
@@ -2286,15 +2431,25 @@ Your response is the JSON object described above, and nothing else. Do not expla
     return plagJaccard(plagShingles(normA), plagShingles(normB));
   }
 
+  // Tableau/Power BI submissions all draw from the same shared class dataset, so their
+  // extracted text (worksheet/field names, shared boilerplate labels) overlaps far more
+  // between independent, honest submissions than code or prose does for the same reason —
+  // there's no equivalent of a "same variable names because it's the only sensible name"
+  // convergence pattern in code; here nearly everything textual is dataset-derived. That
+  // means a given raw similarity score means something different for these two formats and
+  // needs a different bar — see the isBiTool flag used below in openPlagiarismPanel.
+  const BI_TOOL_MARKER_RE = /^\[(TABLEAU WORKBOOK|POWER BI REPORT)\]/;
+
   function computePlagiarismPairs(/** @type {Record<string,{name:string,extractedText:string}>} */ cache) {
     const entries = Object.entries(cache).filter(([, v]) => v.extractedText);
-    const pairs = /** @type {{sA:any,sB:any,score:number}[]} */ ([]);
+    const pairs = /** @type {{sA:any,sB:any,score:number,isBiTool:boolean}[]} */ ([]);
     for (let i = 0; i < entries.length; i++) {
       for (let j = i + 1; j < entries.length; j++) {
         const [uidA, dataA] = entries[i];
         const [uidB, dataB] = entries[j];
         const score = plagSimilarity(dataA.extractedText, dataB.extractedText);
-        pairs.push({ sA: { uid: uidA, name: dataA.name }, sB: { uid: uidB, name: dataB.name }, score });
+        const isBiTool = BI_TOOL_MARKER_RE.test(dataA.extractedText) && BI_TOOL_MARKER_RE.test(dataB.extractedText);
+        pairs.push({ sA: { uid: uidA, name: dataA.name }, sB: { uid: uidB, name: dataB.name }, score, isBiTool });
       }
     }
     return pairs.sort((a, b) => b.score - a.score);
@@ -2313,8 +2468,14 @@ Your response is the JSON object described above, and nothing else. Do not expla
     overlay.className = 'mag-plag-overlay';
 
     const checkedCount = Object.keys(cache).length;
-    const SHOW_MIN = 0.40;
-    const visible  = pairs.filter(p => p.score >= SHOW_MIN);
+    const SHOW_MIN    = 0.40;
+    // Tableau/Power BI submissions share dataset-derived vocabulary that inflates raw
+    // n-gram similarity between independent, honest work — see BI_TOOL_MARKER_RE above.
+    // Require a higher score before even surfacing these pairs, to keep that noise out
+    // of the list; the AI Confirm prompt below is where the real discrimination happens.
+    const SHOW_MIN_BI = 0.55;
+    const showMinFor  = (/** @type {{isBiTool:boolean}} */ p) => p.isBiTool ? SHOW_MIN_BI : SHOW_MIN;
+    const visible     = pairs.filter(p => p.score >= showMinFor(p));
 
     const scoreChip = (/** @type {number} */ score) => {
       const pct = Math.round(score * 100);
@@ -2328,12 +2489,13 @@ Your response is the JSON object described above, and nothing else. Do not expla
           <div class="mag-plag-row" id="mag-plag-row-${idx}">
             <span class="mag-plag-names">${p.sA.name} &amp; ${p.sB.name}</span>
             ${scoreChip(p.score)}
+            ${p.isBiTool ? '<span class="mag-plag-bi-note" title="Tableau/Power BI submissions share dataset-derived vocabulary — rely on AI Confirm, not this score alone">BI tool</span>' : ''}
             <button class="mag-btn mag-plag-ai-btn" data-idx="${idx}" title="Ask AI to confirm (costs 1 API call)">AI Confirm</button>
             <div class="mag-plag-verdict" id="mag-plag-verdict-${idx}"></div>
           </div>`).join('')
       : `<div class="mag-plag-clear">No suspicious pairs found above 40% similarity.</div>`;
 
-    const below = pairs.filter(p => p.score < SHOW_MIN);
+    const below = pairs.filter(p => p.score < showMinFor(p));
 
     overlay.innerHTML = `
       <div class="mag-plag-box">
@@ -2417,6 +2579,16 @@ Your response is the JSON object described above, and nothing else. Do not expla
         vEl.innerHTML   = '';
         try {
           const clip = (/** @type {string} */ t, /** @type {number} */ n) => (t || '').slice(0, n);
+          const checkInstructions = pair.isBiTool
+            // Tableau/Power BI: the field/column names and dataset vocabulary are shared by
+            // the whole class regardless of authorship — that overlap carries ~zero signal.
+            // These tools also give enormous freedom in HOW to build a view (chart type,
+            // color, layout, exact formula phrasing), so two independent students landing on
+            // the *same* non-obvious choice is actually stronger evidence than the same
+            // degree of similarity would be in code, where a single "correct" idiom often
+            // exists and everyone converges on it regardless of copying.
+            ? `Check: verbatim or near-verbatim calculated-field/measure formula text (not just referencing the same fields — the actual expression, e.g. same non-obvious function choice, same parenthesization), identical custom field/calculation naming, matching dashboard/layout positions, and matching NON-default choices the assignment left open (chart type, color theme, filter values) — these are unlikely to arise independently. Do NOT treat shared field/column names, chart types the assignment instructions explicitly require, or standard aggregations (SUM/AVERAGE on the obvious measure) as evidence — every submission shares the same dataset and instructions, so that overlap is expected and uninformative.`
+            : `Check: same variable names, identical code logic, same written arguments, same phrasing, same errors. Note if overlap comes from shared boilerplate or assignment template vs actual copied work.`;
           const prompt =
 `You are checking two student submissions for academic dishonesty.
 Similarity score: ${Math.round(pair.score * 100)}%
@@ -2432,7 +2604,7 @@ ${clip(cache[pair.sB.uid].extractedText, 2500)}
 Respond ONLY with valid JSON (no markdown):
 {"verdict":"likely_plagiarism"|"coincidental"|"uncertain","confidence":"high"|"medium"|"low","reason":"one sentence naming the specific element that matches or differs"}
 
-Check: same variable names, identical code logic, same written arguments, same phrasing, same errors. Note if overlap comes from shared boilerplate or assignment template vs actual copied work.`;
+${checkInstructions}`;
           const raw    = await callAI(prompt, null);
           const match  = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim().match(/\{[\s\S]*\}/);
           const parsed = JSON.parse(match ? match[0] : raw);
@@ -2843,6 +3015,10 @@ Check: same variable names, identical code logic, same written arguments, same p
     .mag-plag-high  { background: rgba(200,60,20,0.40);  color: #ff8050; }
     .mag-plag-med   { background: rgba(180,130,20,0.40); color: #ffc050; }
     .mag-plag-low   { background: rgba(150,150,20,0.30); color: #d8c840; }
+    .mag-plag-bi-note {
+      font-size: 10px; padding: 2px 7px; border-radius: 10px; white-space: nowrap;
+      background: rgba(100,140,220,0.25); color: #90b0f0; cursor: help;
+    }
     .mag-plag-ai-btn { font-size: 11px; padding: 3px 10px; white-space: nowrap; }
     .mag-plag-verdict { width: 100%; font-size: 11px; padding: 2px 0; }
     .mag-plag-verdict-chip { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
