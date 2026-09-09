@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.3
+// @version      2.6.4
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2252,16 +2252,52 @@ Your response is the JSON object described above, and nothing else. Do not expla
     /\bthe student'?s?\b/i, /\bthis student'?s?\b/i,
   ];
 
-  function stripBannedPhrases(/** @type {string} */ feedback) {
-    if (!feedback) return feedback;
-    const kept = splitSentences(feedback).filter(sentence => {
-      const hit = BANNED_PHRASE_SIGNALS.find(p => p.test(sentence));
-      if (hit) {
-        console.warn('[MAG] Dropped feedback sentence (banned phrase / third-person voice):', sentence, '| matched:', hit);
-        return false;
+  // Asks the AI to rewrite a single sentence that tripped BANNED_PHRASE_SIGNALS, keeping
+  // its factual content but fixing the phrasing/voice violation — used so a sentence with
+  // real, specific substance (e.g. naming exactly what was built) doesn't get thrown away
+  // wholesale just because it used "the student" or "excellent work". Returns null (caller
+  // falls back to dropping, the prior behavior) if the rewrite fails outright or the model
+  // reproduces a violation anyway — never posts a sentence that hasn't itself been checked.
+  async function rewriteBannedSentence(/** @type {string} */ sentence) {
+    try {
+      const prompt = `Rewrite this single sentence of student feedback. Keep the exact same factual content, specific details, and meaning — only fix the phrasing:
+- Never use any of these words/phrases, or any inflection of them: demonstrates, showcases, commendable, proficiency, exhibits, furthermore, additionally, in conclusion, overall, it's worth noting, it's important to, reflects, highlights, clear understanding, well-structured, effectively, excellent work, great job, well done, strong effort, shows a good understanding, moving forward, ensure that, it's clear that, you've shown, noteworthy, impressive, solid work/foundation/effort, thorough, comprehensive, robust (unless "statistically robust" or "robust to X"), valuable, insightful, thoughtful, meaningful, crucial, significant (unless "statistically significant"), notable, delve, grasp, nuanced, utilize, leverage, streamline, foster, garner.
+- Address the student directly as "you"/"your" — never third person ("the student", "this student").
+- Keep roughly the same length. Do not add new claims or drop specific details (names, counts, technical terms) that were in the original.
+
+Sentence: "${sentence}"
+
+Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown.`;
+      const raw = (await callAI(prompt, null)).trim();
+      let cleaned = stripThinking(raw).replace(/^["']|["']$/g, '').trim();
+      if (!cleaned) return null;
+      if (BANNED_PHRASE_SIGNALS.some(p => p.test(cleaned))) {
+        console.warn('[MAG] Rewrite still violated the banned-phrase guard — dropping instead:', cleaned);
+        return null;
       }
-      return true;
-    });
+      // Same fix as v2.5.79's groundFeedback punctuation guard: the model isn't always
+      // told to (and doesn't reliably) end a rewritten fragment with terminal punctuation,
+      // and joining an unpunctuated sentence into the rest produces the exact run-on bug
+      // that fix closed. Normalize before returning, not just at the original join site.
+      if (!/[.!?]["')\]]?$/.test(cleaned)) cleaned += '.';
+      return cleaned;
+    } catch (e) {
+      console.warn('[MAG] Rewrite attempt failed — dropping sentence instead:', /** @type {Error} */(e).message);
+      return null;
+    }
+  }
+
+  async function stripBannedPhrases(/** @type {string} */ feedback) {
+    if (!feedback) return feedback;
+    const kept = [];
+    for (const sentence of splitSentences(feedback)) {
+      const hit = BANNED_PHRASE_SIGNALS.find(p => p.test(sentence));
+      if (!hit) { kept.push(sentence); continue; }
+      console.warn('[MAG] Feedback sentence hit banned phrase / third-person voice — attempting rewrite:', sentence, '| matched:', hit);
+      const rewritten = await rewriteBannedSentence(sentence);
+      if (rewritten) kept.push(rewritten);
+      else console.warn('[MAG] Dropped feedback sentence (rewrite unavailable or still violated the guard):', sentence);
+    }
     const result = kept.join(' ').trim();
     if (!result && feedback) console.warn('[MAG] Feedback fully dropped by banned-phrase guard. Original:', feedback);
     return result;
@@ -2313,7 +2349,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
         scores:         [],
         totalPoints:    0,
         overallComment: '',
-        feedback:       stripBannedPhrases(verifyNumericClaims(sanitizeFeedback([], rubric, feedback), sub)),
+        feedback:       await stripBannedPhrases(verifyNumericClaims(sanitizeFeedback([], rubric, feedback), sub)),
       };
     }
 
@@ -2361,7 +2397,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
         scores:         grading.scores,
         totalPoints:    grading.totalPoints,
         overallComment: grading.overallComment,
-        feedback:       stripBannedPhrases(verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''), sub)),
+        feedback:       await stripBannedPhrases(verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, splitFeedback || grading.overallComment || ''), sub)),
       };
     }
 
@@ -2389,7 +2425,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
       feedback = await generateGroundedFeedback(feedPrompt, true, sub);
     }
     if (!feedback) feedback = grading.overallComment || '';
-    feedback = stripBannedPhrases(verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, feedback), sub));
+    feedback = await stripBannedPhrases(verifyNumericClaims(sanitizeFeedback(grading.scores, rubric, feedback), sub));
 
     return { scores: grading.scores, totalPoints: grading.totalPoints, overallComment: grading.overallComment, feedback };
   }
