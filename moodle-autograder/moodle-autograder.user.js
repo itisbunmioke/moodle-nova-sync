@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.0
+// @version      2.6.1
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -506,11 +506,17 @@
       const inner  = fflate.unzipSync(new Uint8Array(buffer));
       const twbName = Object.keys(inner).find(n => /\.twb$/i.test(n) && !n.includes('/'))
                     || Object.keys(inner).find(n => /\.twb$/i.test(n));
-      if (!twbName) return '[TABLEAU WORKBOOK — no .twb file found inside .twbx]';
+      if (!twbName) {
+        console.warn('[MAG] Tableau: no .twb entry found. Actual zip entries:', Object.keys(inner).slice(0, 60));
+        return `[EXTRACTION FAILED: Tableau workbook — no .twb file found inside .twbx. This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
+      }
 
       const xmlText = new TextDecoder('utf-8', { fatal: false }).decode(inner[twbName]);
       const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-      if (doc.querySelector('parsererror')) return '[TABLEAU WORKBOOK — .twb XML could not be parsed]';
+      if (doc.querySelector('parsererror')) {
+        console.warn('[MAG] Tableau: .twb XML parse error. First 300 chars:', xmlText.slice(0, 300));
+        return `[EXTRACTION FAILED: Tableau workbook — .twb XML could not be parsed. This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
+      }
 
       const worksheets = [...doc.querySelectorAll('worksheet')]
         .map(w => w.getAttribute('name')).filter(Boolean);
@@ -548,10 +554,16 @@
       if (dashboards.length) parts.push(`Dashboards: ${dashboards.join(' | ')}`);
       if (calcs.length)      parts.push(`Calculated Fields:\n${calcs.map(c => '  - ' + c).join('\n')}`);
       if (filters.length)    parts.push(`Filters:\n${filters.map(f => '  - ' + f).join('\n')}`);
-      if (parts.length === 1) parts.push('(no worksheets, dashboards, calculated fields, or filters found)');
+      if (parts.length === 1) {
+        // A real submission has at least a worksheet — zero of everything is more likely
+        // this parser missing the right elements than a genuinely blank workbook.
+        console.warn('[MAG] Tableau: .twb parsed but found zero worksheets/dashboards/calcs/filters.');
+        return `[EXTRACTION FAILED: Tableau workbook — parsed the .twb file but found no worksheets, dashboards, calculated fields, or filters. This is almost certainly a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
+      }
       return parts.join('\n\n');
     } catch (e) {
-      return `[TABLEAU WORKBOOK — could not parse: ${/** @type {any} */(e).message}]`;
+      console.warn('[MAG] Tableau: unexpected error extracting .twbx:', e);
+      return `[EXTRACTION FAILED: Tableau workbook — could not parse (${/** @type {any} */(e).message}). This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
     }
   }
 
@@ -571,12 +583,38 @@
     try {
       const fflate = /** @type {any} */ (window).fflate;
       const inner  = fflate.unzipSync(new Uint8Array(buffer));
-      const layoutName = Object.keys(inner).find(n => /^report\/layout$/i.test(n));
-      if (!layoutName) return '[POWER BI REPORT — no Report/Layout entry found inside .pbix]';
+      const entryNames = Object.keys(inner);
+      // Try an exact match first (tolerating either / or \ as the path separator — some
+      // Windows-authored zips use \ in the central directory despite the ZIP spec mandating
+      // /), then fall back to matching just the basename, then to any entry that merely
+      // contains "layout" — broadening step by step rather than failing outright on a path
+      // assumption that may not hold across Power BI versions/export tools.
+      const norm = (/** @type {string} */ n) => n.replace(/\\/g, '/').toLowerCase();
+      let layoutName = entryNames.find(n => norm(n) === 'report/layout')
+                     || entryNames.find(n => norm(n).split('/').pop() === 'layout')
+                     || entryNames.find(n => norm(n).includes('layout'));
+      if (!layoutName) {
+        console.warn('[MAG] Power BI: no Layout-like entry found. Actual zip entries:', entryNames.slice(0, 60));
+        return `[EXTRACTION FAILED: Power BI report — no Report/Layout entry found inside .pbix. This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
+      }
 
       let raw = new TextDecoder('utf-16le').decode(inner[layoutName]);
       if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1); // strip BOM if TextDecoder left it in
-      const layout = JSON.parse(raw);
+      let layout;
+      try {
+        layout = JSON.parse(raw);
+      } catch (parseErr) {
+        // Some exports/versions may not use UTF-16LE — retry as UTF-8 before giving up,
+        // rather than assuming the submission itself is at fault.
+        try {
+          let raw8 = new TextDecoder('utf-8', { fatal: false }).decode(inner[layoutName]);
+          if (raw8.charCodeAt(0) === 0xFEFF) raw8 = raw8.slice(1);
+          layout = JSON.parse(raw8);
+        } catch {
+          console.warn('[MAG] Power BI: found entry', layoutName, 'but could not parse as JSON (tried UTF-16LE and UTF-8). First 300 chars (UTF-16LE):', raw.slice(0, 300));
+          return `[EXTRACTION FAILED: Power BI report — found a "${layoutName}" entry but could not parse it as JSON (${/** @type {any} */(parseErr).message}). This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
+        }
+      }
 
       const pages = (layout.sections || []).map((/** @type {any} */ section) => {
         const pageName = section.displayName || section.name || '(unnamed page)';
@@ -601,10 +639,14 @@
         return visuals.length ? `${pageName}:\n${visuals.map((/** @type {string} */ v) => '  - ' + v).join('\n')}` : `${pageName}: (no visuals)`;
       });
 
-      if (!pages.length) return '[POWER BI REPORT — layout contained no pages]';
+      if (!pages.length) {
+        console.warn('[MAG] Power BI: parsed layout JSON but found zero sections. Raw layout keys:', Object.keys(layout || {}));
+        return `[EXTRACTION FAILED: Power BI report — parsed the layout file but it contained no pages. A real report always has at least one page, so this is almost certainly a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
+      }
       return `[POWER BI REPORT]\nNote: only report layout (pages/visuals/fields) is visible here — DAX measures, calculated columns, and the underlying data model are stored in a binary format and are not inspectable. Do not assess or claim anything about formula/measure correctness for this submission.\n\n${pages.join('\n\n')}`;
     } catch (e) {
-      return `[POWER BI REPORT — could not parse: ${/** @type {any} */(e).message}]`;
+      console.warn('[MAG] Power BI: unexpected error extracting .pbix:', e);
+      return `[EXTRACTION FAILED: Power BI report — could not parse (${/** @type {any} */(e).message}). This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
     }
   }
 
@@ -1201,6 +1243,7 @@ ${!hasDataset && (instructions.toLowerCase().includes('dataset') || instructions
 ${!hasPresentation && (instructions.toLowerCase().includes('.pptx') || instructions.toLowerCase().includes('presentation') || instructions.toLowerCase().includes('slides') || instructions.toLowerCase().includes('powerpoint')) ? '- WARNING: The assignment instructions require a presentation/slides but none was found. Penalise any criteria related to the presentation accordingly.' : ''}
 ${!hasTableau && (instructions.toLowerCase().includes('.twbx') || instructions.toLowerCase().includes('tableau')) ? '- WARNING: The assignment instructions require a Tableau workbook but none was found in this submission. Penalise any criteria related to it accordingly.' : ''}
 ${!hasPowerBI && (instructions.toLowerCase().includes('.pbix') || instructions.toLowerCase().includes('power bi') || instructions.toLowerCase().includes('powerbi')) ? '- WARNING: The assignment instructions require a Power BI report but none was found in this submission. Penalise any criteria related to it accordingly.' : ''}
+${sub.includes('[EXTRACTION FAILED') ? '- WARNING: One file in this submission is marked "[EXTRACTION FAILED: ...]" — the grading tool could not read that specific file; this is NOT evidence the student\'s work is missing, incomplete, or wrong. Do not penalise or score zero for criteria that file would have addressed. Instead, grade every other criterion normally from the content that WAS successfully extracted, and for any criterion you genuinely cannot assess because of the unread file, say so explicitly in feedback (e.g. "could not be assessed — file unreadable by the grading tool") rather than scoring it as failing.' : ''}
 
 — FEEDBACK RULES (for the "feedback" field) —
 You are ${instructorName || 'the instructor'}, leaving a quick grade comment. Style: ${style || 'conversational'}.
@@ -2148,6 +2191,18 @@ Your response is the JSON object described above, and nothing else. Do not expla
   }
 
   async function gradeSubmission(/** @type {string} */ title, /** @type {string} */ instructions, /** @type {any[]} */ rubric, /** @type {string} */ submissionText, /** @type {any} */ inlineData, /** @type {string[]} */ submittedFiles = []) {
+    // If the ENTIRE submission is a single file whose extraction failed (a .pbix/.twbx
+    // parser hit an unexpected shape and couldn't read it), submissionText is exactly that
+    // failure marker with nothing else concatenated. Sending that to the AI as "the
+    // submission" produces a confident-sounding but false "your file came through empty —
+    // 0/100" verdict for what may be a fully compliant submission the tool simply failed to
+    // read. Fail loudly here instead — no grade posted, flagged for manual review — rather
+    // than let a tooling bug masquerade as a graded zero. (A failure embedded partway
+    // through a multi-file submission's combined text does NOT hit this — the AI still
+    // grades the rest, per the EXTRACTION FAILED handling in the grading prompt.)
+    if (submissionText && submissionText.trim().startsWith('[EXTRACTION FAILED')) {
+      throw new Error(`Could not read this submission file — needs manual review. ${submissionText.trim()}`);
+    }
     const sub = truncateSubmission(submissionText);
 
     // No rubric configured on this assignment (e.g. a Lab Activity graded "Simple direct
