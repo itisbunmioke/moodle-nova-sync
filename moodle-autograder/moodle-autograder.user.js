@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.1
+// @version      2.6.2
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1243,7 +1243,6 @@ ${!hasDataset && (instructions.toLowerCase().includes('dataset') || instructions
 ${!hasPresentation && (instructions.toLowerCase().includes('.pptx') || instructions.toLowerCase().includes('presentation') || instructions.toLowerCase().includes('slides') || instructions.toLowerCase().includes('powerpoint')) ? '- WARNING: The assignment instructions require a presentation/slides but none was found. Penalise any criteria related to the presentation accordingly.' : ''}
 ${!hasTableau && (instructions.toLowerCase().includes('.twbx') || instructions.toLowerCase().includes('tableau')) ? '- WARNING: The assignment instructions require a Tableau workbook but none was found in this submission. Penalise any criteria related to it accordingly.' : ''}
 ${!hasPowerBI && (instructions.toLowerCase().includes('.pbix') || instructions.toLowerCase().includes('power bi') || instructions.toLowerCase().includes('powerbi')) ? '- WARNING: The assignment instructions require a Power BI report but none was found in this submission. Penalise any criteria related to it accordingly.' : ''}
-${sub.includes('[EXTRACTION FAILED') ? '- WARNING: One file in this submission is marked "[EXTRACTION FAILED: ...]" — the grading tool could not read that specific file; this is NOT evidence the student\'s work is missing, incomplete, or wrong. Do not penalise or score zero for criteria that file would have addressed. Instead, grade every other criterion normally from the content that WAS successfully extracted, and for any criterion you genuinely cannot assess because of the unread file, say so explicitly in feedback (e.g. "could not be assessed — file unreadable by the grading tool") rather than scoring it as failing.' : ''}
 
 — FEEDBACK RULES (for the "feedback" field) —
 You are ${instructorName || 'the instructor'}, leaving a quick grade comment. Style: ${style || 'conversational'}.
@@ -2191,17 +2190,19 @@ Your response is the JSON object described above, and nothing else. Do not expla
   }
 
   async function gradeSubmission(/** @type {string} */ title, /** @type {string} */ instructions, /** @type {any[]} */ rubric, /** @type {string} */ submissionText, /** @type {any} */ inlineData, /** @type {string[]} */ submittedFiles = []) {
-    // If the ENTIRE submission is a single file whose extraction failed (a .pbix/.twbx
-    // parser hit an unexpected shape and couldn't read it), submissionText is exactly that
-    // failure marker with nothing else concatenated. Sending that to the AI as "the
-    // submission" produces a confident-sounding but false "your file came through empty —
-    // 0/100" verdict for what may be a fully compliant submission the tool simply failed to
-    // read. Fail loudly here instead — no grade posted, flagged for manual review — rather
-    // than let a tooling bug masquerade as a graded zero. (A failure embedded partway
-    // through a multi-file submission's combined text does NOT hit this — the AI still
-    // grades the rest, per the EXTRACTION FAILED handling in the grading prompt.)
-    if (submissionText && submissionText.trim().startsWith('[EXTRACTION FAILED')) {
-      throw new Error(`Could not read this submission file — needs manual review. ${submissionText.trim()}`);
+    // If any part of the submission failed to extract (a .pbix/.twbx parser hit an
+    // unexpected shape), block automated grading entirely rather than let the AI decide
+    // how to handle it — tried instructing it not to penalise the unread file, and it
+    // "resolved" that by inventing a fictional policy and awarding full credit across
+    // every criterion instead, which is worse than a false zero: unearned marks are far
+    // less likely to be caught than a suspiciously low one. A Moodle rubric has no way to
+    // represent "unscored," so there's no safe instruction that leaves this judgment call
+    // to the model — every criterion must get a real, human-reviewed decision here.
+    // Checked anywhere in the text (not just at the start), so this also blocks the
+    // multi-file case where the failure is embedded alongside otherwise-good content.
+    if (submissionText && submissionText.includes('[EXTRACTION FAILED')) {
+      const detail = (submissionText.match(/\[EXTRACTION FAILED:[^\]]*\]/) || [submissionText])[0];
+      throw new Error(`Could not read part of this submission — needs manual review. ${detail}`);
     }
     const sub = truncateSubmission(submissionText);
 
