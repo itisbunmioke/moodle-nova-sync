@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.2
+// @version      2.6.3
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -567,83 +567,177 @@
     }
   }
 
-  // Extract structural content from a Power BI report (.pbix) — a ZIP whose Report/Layout
-  // entry is a UTF-16LE-encoded JSON file (confirmed: Power BI requires this exact encoding
-  // or the file won't reopen) describing pages and visuals. The actual data model — DAX
-  // measures, calculated columns, relationships, cached data — lives in a proprietary binary
-  // tabular-model format (the same one Analysis Services uses) that is not reasonably
-  // parseable in a browser userscript, so grading is necessarily limited to what the report
-  // layout exposes: page structure, visual types, titles, and the fields each visual is
-  // bound to. That limitation is stated in the extracted text itself so the grading prompt
-  // sees it directly, not just in a separate instruction the model might not connect.
-  // Per-visual config parsing is best-effort — Microsoft doesn't publish this JSON shape,
-  // so a shape mismatch on one visual degrades to a plain type label rather than failing
-  // the whole page (same defensive posture as callCloudflare's response-shape handling).
+  const POWER_BI_NOTE = 'Note: only report layout (pages/visuals/fields) is visible here — DAX measures, calculated columns, and the underlying data model are stored in a binary format and are not inspectable. Do not assess or claim anything about formula/measure correctness for this submission.';
+
+  // Reads a title string out of a PBIR/legacy-Layout "literal expression" wrapper —
+  // {"expr":{"Literal":{"Value":"'text'"}}} — with the literal value itself carrying its
+  // own embedded single quotes per Power BI's expression-syntax convention. Falls back to
+  // treating the node as a plain string in case a given file doesn't use the wrapper.
+  function pbiLiteralText(/** @type {any} */ node) {
+    const raw = node?.expr?.Literal?.Value ?? (typeof node === 'string' ? node : null);
+    if (typeof raw !== 'string') return null;
+    return raw.replace(/^'|'$/g, '') || null;
+  }
+
+  // Recursively collects field/column/measure references from a visual's query object.
+  // Real PBIR structure (confirmed against Microsoft's own example files) nests these
+  // under query.queryState.<Role>.projections[], each with a clean flat "nativeQueryRef"
+  // string (preferred) alongside a deeper field.Column/Measure.Property + Expression.
+  // SourceRef.Entity breakdown. A flat recursive scan for nativeQueryRef/Property/Entity
+  // is deliberately used instead of hardcoding the full nested path, since query-role
+  // names vary by visual type (Category/Y/Series/Values/Rows/Columns/...) and a scan is
+  // robust to that variation in a way a fixed path isn't.
+  function collectPbiFieldRefs(/** @type {any} */ node, /** @type {Set<string>} */ out) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(n => collectPbiFieldRefs(n, out)); return; }
+    if (typeof node.nativeQueryRef === 'string' && node.nativeQueryRef) {
+      out.add(node.nativeQueryRef);
+      return; // this projection's own field is captured — don't also descend into it
+    }
+    for (const [k, v] of Object.entries(node)) {
+      if ((k === 'Property' || k === 'Entity') && typeof v === 'string' && v) out.add(v);
+      else if (v && typeof v === 'object') collectPbiFieldRefs(v, out);
+    }
+  }
+
+  // Handles both visual-config shapes: the newer PBIR "visual" (visualType,
+  // visualContainerObjects, query.queryState.*.projections[]) and the older legacy-Layout
+  // "singleVisual" (visualType, vcObjects, prototypeQuery.Select[]) — the two formats use
+  // different property names for the same information, confirmed from real files of both
+  // vintages, so this normalizes them into one path rather than duplicating the logic per
+  // format and risking one silently degrading (e.g. legacy visuals all coming back as
+  // "(unknown type)" if only the PBIR property names were checked).
+  function pbiVisualJsonToLine(/** @type {any} */ vj) {
+    try {
+      const visual = vj.visual || vj.singleVisual || {};
+      const vType  = visual.visualType || '(unknown type)';
+      const titleObjs = visual.visualContainerObjects || visual.vcObjects || {};
+      const title  = pbiLiteralText(titleObjs.title?.[0]?.properties?.text);
+      const fields = new Set();
+      collectPbiFieldRefs(visual.query, fields); // PBIR: query.queryState.*.projections[]
+      for (const s of (visual.prototypeQuery?.Select || [])) { // legacy: flat Select[] array
+        const ref = s?.Name || s?.NativeReferenceName || s?.Property;
+        if (ref) fields.add(ref);
+      }
+      const label = title ? `"${title}" (${vType})` : `(${vType})`;
+      return fields.size ? `${label} — fields: ${[...fields].join(', ')}` : label;
+    } catch {
+      return '(visual — could not parse config)';
+    }
+  }
+
+  // Newer PBIR format: one JSON file per page (Report/definition/pages/<id>/page.json)
+  // and per visual (.../visuals/<id>/visual.json) — confirmed from a real student
+  // submission whose entries had no flat Report/Layout at all, and schema-confirmed
+  // against Microsoft's own PBIR example files (page.displayName, visual.visualType,
+  // query.queryState.*.projections[].nativeQueryRef). Returns null (not a failure marker)
+  // if this submission simply isn't in this format, so the caller can try the legacy
+  // format next rather than giving up.
+  function pbirPagesToText(/** @type {Record<string,Uint8Array>} */ inner, /** @type {string[]} */ entryNames) {
+    const pageJsonRe   = /^Report\/definition\/pages\/([^/]+)\/page\.json$/i;
+    const visualJsonRe = /^Report\/definition\/pages\/([^/]+)\/visuals\/([^/]+)\/visual\.json$/i;
+    const pageEntries  = entryNames.filter(n => pageJsonRe.test(n));
+    if (!pageEntries.length) return null;
+
+    const decode = (/** @type {string} */ name) =>
+      new TextDecoder('utf-8', { fatal: false }).decode(inner[name]);
+
+    // Order pages per pages.json's pageOrder when present; fall back to entry order.
+    let order = /** @type {string[]|null} */ (null);
+    const pagesJsonName = entryNames.find(n => /^Report\/definition\/pages\/pages\.json$/i.test(n));
+    if (pagesJsonName) {
+      try { order = JSON.parse(decode(pagesJsonName)).pageOrder || null; } catch { /* use entry order */ }
+    }
+    const idFor = (/** @type {string} */ entryName) => (entryName.match(pageJsonRe) || [])[1];
+    const orderedEntries = order
+      ? [...pageEntries].sort((a, b) => order.indexOf(idFor(a)) - order.indexOf(idFor(b)))
+      : pageEntries;
+
+    const pages = orderedEntries.map(pageEntryName => {
+      const pageId = idFor(pageEntryName);
+      let pageName = pageId;
+      try {
+        const pj = JSON.parse(decode(pageEntryName));
+        pageName = pj.displayName || pj.name || pageId;
+      } catch { /* keep pageId as the label */ }
+
+      const visualEntries = entryNames.filter(n => {
+        const m = n.match(visualJsonRe);
+        return m && m[1] === pageId;
+      });
+      const visuals = visualEntries.map(visEntryName => {
+        try { return pbiVisualJsonToLine(JSON.parse(decode(visEntryName))); }
+        catch { return '(visual — could not parse config)'; }
+      });
+      return visuals.length ? `${pageName}:\n${visuals.map(v => '  - ' + v).join('\n')}` : `${pageName}: (no visuals)`;
+    });
+
+    if (!pages.length) return null;
+    return `[POWER BI REPORT]\n${POWER_BI_NOTE}\n\n${pages.join('\n\n')}`;
+  }
+
+  // Older flat format: a single Report/Layout entry (UTF-16LE JSON) with all pages under
+  // sections[] and all visuals under each section's visualContainers[] (each visual's
+  // detail itself double-JSON-encoded in a "config" string). Kept as a fallback for files
+  // saved by earlier Power BI Desktop versions that predate the PBIR default. Returns null
+  // if no Layout-shaped entry is found, so the caller can report a combined failure.
+  function pbixLegacyLayoutToText(/** @type {Record<string,Uint8Array>} */ inner, /** @type {string[]} */ entryNames) {
+    const norm = (/** @type {string} */ n) => n.replace(/\\/g, '/').toLowerCase();
+    const layoutName = entryNames.find(n => norm(n) === 'report/layout')
+                     || entryNames.find(n => norm(n).split('/').pop() === 'layout')
+                     || entryNames.find(n => norm(n).includes('layout'));
+    if (!layoutName) return null;
+
+    let raw = new TextDecoder('utf-16le').decode(inner[layoutName]);
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+    let layout;
+    try {
+      layout = JSON.parse(raw);
+    } catch {
+      try {
+        let raw8 = new TextDecoder('utf-8', { fatal: false }).decode(inner[layoutName]);
+        if (raw8.charCodeAt(0) === 0xFEFF) raw8 = raw8.slice(1);
+        layout = JSON.parse(raw8);
+      } catch {
+        console.warn('[MAG] Power BI: found legacy "%s" entry but could not parse as JSON. First 300 chars (UTF-16LE):', layoutName, raw.slice(0, 300));
+        return null;
+      }
+    }
+
+    const pages = (layout.sections || []).map((/** @type {any} */ section) => {
+      const pageName = section.displayName || section.name || '(unnamed page)';
+      const visuals = (section.visualContainers || []).map((/** @type {any} */ vc) => {
+        try { return pbiVisualJsonToLine(JSON.parse(vc.config || '{}')); }
+        catch { return '(visual — could not parse config)'; }
+      });
+      return visuals.length ? `${pageName}:\n${visuals.map((/** @type {string} */ v) => '  - ' + v).join('\n')}` : `${pageName}: (no visuals)`;
+    });
+    if (!pages.length) return null;
+    return `[POWER BI REPORT]\n${POWER_BI_NOTE}\n\n${pages.join('\n\n')}`;
+  }
+
+  // Extract structural content from a Power BI report (.pbix) — a ZIP that, depending on
+  // the Power BI Desktop version that saved it, uses either the newer per-page/per-visual
+  // PBIR format or the older flat Report/Layout format (see pbirPagesToText and
+  // pbixLegacyLayoutToText). Either way, the actual data model — DAX measures, calculated
+  // columns, relationships, cached data — lives in a proprietary binary tabular-model
+  // format that is not reasonably parseable in a browser userscript, so grading is
+  // necessarily limited to what the report layout exposes. That limitation is stated in
+  // the extracted text itself so the grading prompt sees it directly.
   function pbixToText(/** @type {ArrayBuffer} */ buffer) {
     try {
       const fflate = /** @type {any} */ (window).fflate;
       const inner  = fflate.unzipSync(new Uint8Array(buffer));
       const entryNames = Object.keys(inner);
-      // Try an exact match first (tolerating either / or \ as the path separator — some
-      // Windows-authored zips use \ in the central directory despite the ZIP spec mandating
-      // /), then fall back to matching just the basename, then to any entry that merely
-      // contains "layout" — broadening step by step rather than failing outright on a path
-      // assumption that may not hold across Power BI versions/export tools.
-      const norm = (/** @type {string} */ n) => n.replace(/\\/g, '/').toLowerCase();
-      let layoutName = entryNames.find(n => norm(n) === 'report/layout')
-                     || entryNames.find(n => norm(n).split('/').pop() === 'layout')
-                     || entryNames.find(n => norm(n).includes('layout'));
-      if (!layoutName) {
-        console.warn('[MAG] Power BI: no Layout-like entry found. Actual zip entries:', entryNames.slice(0, 60));
-        return `[EXTRACTION FAILED: Power BI report — no Report/Layout entry found inside .pbix. This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
-      }
 
-      let raw = new TextDecoder('utf-16le').decode(inner[layoutName]);
-      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1); // strip BOM if TextDecoder left it in
-      let layout;
-      try {
-        layout = JSON.parse(raw);
-      } catch (parseErr) {
-        // Some exports/versions may not use UTF-16LE — retry as UTF-8 before giving up,
-        // rather than assuming the submission itself is at fault.
-        try {
-          let raw8 = new TextDecoder('utf-8', { fatal: false }).decode(inner[layoutName]);
-          if (raw8.charCodeAt(0) === 0xFEFF) raw8 = raw8.slice(1);
-          layout = JSON.parse(raw8);
-        } catch {
-          console.warn('[MAG] Power BI: found entry', layoutName, 'but could not parse as JSON (tried UTF-16LE and UTF-8). First 300 chars (UTF-16LE):', raw.slice(0, 300));
-          return `[EXTRACTION FAILED: Power BI report — found a "${layoutName}" entry but could not parse it as JSON (${/** @type {any} */(parseErr).message}). This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
-        }
-      }
+      const pbir = pbirPagesToText(inner, entryNames);
+      if (pbir) return pbir;
 
-      const pages = (layout.sections || []).map((/** @type {any} */ section) => {
-        const pageName = section.displayName || section.name || '(unnamed page)';
-        const visuals = (section.visualContainers || []).map((/** @type {any} */ vc) => {
-          try {
-            const cfg    = JSON.parse(vc.config || '{}');
-            const sv     = cfg.singleVisual || {};
-            const vType  = sv.visualType || '(unknown type)';
-            const title  = (sv.vcObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value || '')
-                           .replace(/^'|'$/g, '') || null;
-            const fields = [...new Set(
-              (sv.prototypeQuery?.Select || [])
-                .map((/** @type {any} */ s) => s.Name || s.NativeReferenceName || s.Property)
-                .filter(Boolean)
-            )];
-            const label = title ? `"${title}" (${vType})` : `(${vType})`;
-            return fields.length ? `${label} — fields: ${fields.join(', ')}` : label;
-          } catch {
-            return '(visual — could not parse config)';
-          }
-        });
-        return visuals.length ? `${pageName}:\n${visuals.map((/** @type {string} */ v) => '  - ' + v).join('\n')}` : `${pageName}: (no visuals)`;
-      });
+      const legacy = pbixLegacyLayoutToText(inner, entryNames);
+      if (legacy) return legacy;
 
-      if (!pages.length) {
-        console.warn('[MAG] Power BI: parsed layout JSON but found zero sections. Raw layout keys:', Object.keys(layout || {}));
-        return `[EXTRACTION FAILED: Power BI report — parsed the layout file but it contained no pages. A real report always has at least one page, so this is almost certainly a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
-      }
-      return `[POWER BI REPORT]\nNote: only report layout (pages/visuals/fields) is visible here — DAX measures, calculated columns, and the underlying data model are stored in a binary format and are not inspectable. Do not assess or claim anything about formula/measure correctness for this submission.\n\n${pages.join('\n\n')}`;
+      console.warn('[MAG] Power BI: recognized neither PBIR (Report/definition/pages/*/page.json) nor legacy (Report/Layout) structure. Actual zip entries:', entryNames.slice(0, 60));
+      return `[EXTRACTION FAILED: Power BI report — recognized neither the PBIR nor the legacy internal report structure. This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
     } catch (e) {
       console.warn('[MAG] Power BI: unexpected error extracting .pbix:', e);
       return `[EXTRACTION FAILED: Power BI report — could not parse (${/** @type {any} */(e).message}). This is a tooling limitation, not evidence the submission is empty — do not grade this as zero content.]`;
