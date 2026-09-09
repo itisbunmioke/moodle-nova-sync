@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.4
+// @version      2.6.5
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1377,13 +1377,13 @@ Em-dash character: BANNED. Do not use it anywhere in "feedback". Replace with a 
 Backtick character (\`): BANNED. Never use backticks to mark code, variable names, or technical terms; Moodle's comment box renders them as literal characters, not styled code. Use a single quote for a general reference (a column named 'age') and a double quote when the quoted text is verbatim from the student's submission ("df.sample(n=10)").
 "demonstrates", "showcases", "commendable", "proficiency", "exhibits", "furthermore", "additionally",
 "in conclusion", "overall", "it is worth noting", "it is important to", "reflects", "highlights",
-"clear understanding", "well-structured", "effectively", "excellent work", "great job", "well done",
+"clear understanding", "well-structured", "effectively", "excellent work", "excellent job", "great work", "great job", "well done",
 "strong effort", "shows a good understanding", "moving forward", "ensure that", "it's clear that",
 "you have shown", "noteworthy", "impressive", "solid work", "solid foundation", "solid effort",
 "you've laid", "laid a foundation", "laid a solid", "tightening", "tighten up",
 "decent attempt", "thorough", "comprehensive", "robust", "valuable", "insightful", "thoughtful",
 "meaningful", "crucial", "significant", "notable", "it is evident", "it can be seen",
-"this submission", "as mentioned", "in summary", "on the whole", "your analysis is solid",
+"this submission", "the submission", "as mentioned", "in summary", "on the whole", "your analysis is solid",
 "is solid", "solid overall", "a solid", "delve", "delve into", "grasp", "nuanced", "tapestry",
 "utilize", "leverage" (as a verb for "use"), "streamline", "dive into", "fostered", "garnered",
 "it's worth", "at its core", "in essence", "going forward", "take away", "takeaway",
@@ -1484,13 +1484,13 @@ Em-dash character "—": BANNED. Do not use it anywhere. Replace with a semicolo
 Backtick character (\`): BANNED. Never use backticks to mark code, variable names, or technical terms; Moodle's comment box renders them as literal characters, not styled code. Use a single quote for a general reference (a column named 'age') and a double quote when the quoted text is verbatim from the student's submission ("df.sample(n=10)").
 "demonstrates", "showcases", "commendable", "proficiency", "exhibits", "furthermore", "additionally",
 "in conclusion", "overall", "it is worth noting", "it is important to", "reflects", "highlights",
-"clear understanding", "well-structured", "effectively", "excellent work", "great job", "well done",
+"clear understanding", "well-structured", "effectively", "excellent work", "excellent job", "great work", "great job", "well done",
 "strong effort", "shows a good understanding", "moving forward", "ensure that", "it's clear that",
 "you have shown", "noteworthy", "impressive", "solid work", "solid foundation", "solid effort",
 "you've laid", "laid a foundation", "laid a solid", "tightening", "tighten up",
 "decent attempt", "thorough", "comprehensive", "robust", "valuable", "insightful", "thoughtful",
 "meaningful", "crucial", "significant", "notable", "it is evident", "it can be seen",
-"this submission", "as mentioned", "in summary", "on the whole", "your analysis is solid",
+"this submission", "the submission", "as mentioned", "in summary", "on the whole", "your analysis is solid",
 "is solid", "solid overall", "a solid", "delve", "delve into", "grasp", "nuanced", "tapestry",
 "utilize", "leverage" (as a verb for "use"), "streamline", "dive into", "fostered", "garnered",
 "it's worth", "at its core", "in essence", "going forward", "take away", "takeaway",
@@ -2232,7 +2232,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     /\bexhibit\w*\b/i, /\bfurthermore\b/i, /\badditionally\b/i, /\bin conclusion\b/i,
     /\boverall\b/i, /\bit'?s? (?:is )?worth noting\b/i, /\bit'?s? (?:is )?important to\b/i,
     /\breflect\w*\b/i, /\bhighlight\w*\b/i, /\bclear understanding\b/i, /\bwell-?structured\b/i,
-    /\beffectively\b/i, /\bexcellent work\b/i, /\bgreat job\b/i, /\bwell done\b/i,
+    /\beffectively\b/i, /\b(?:excellent|great) (?:work|job)\b/i, /\bwell done\b/i,
     /\bstrong effort\b/i, /\bshows? a good understanding\b/i, /\bmoving forward\b/i,
     /\bensure that\b/i, /\bit'?s clear that\b/i, /\byou'?(?:ve| have) shown\b/i,
     /\bnoteworthy\b/i, /\bimpress\w*\b/i, /\bsolid (?:work|foundation|effort|overall)\b/i,
@@ -2241,7 +2241,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     /\bthorough\w*\b/i, /\bcomprehensive\b/i, /(?<!statistically )\brobust\b(?!\s+(?:to|regression|scal\w*))/i,
     /\bvaluable\b/i, /\binsightful\b/i, /\bthoughtful\w*\b/i, /\bmeaningful\w*\b/i,
     /\bcrucial\b/i, /(?<!statistically )\bsignificant\b/i, /\bnotable\b/i, /\bit is evident\b/i,
-    /\bit can be seen\b/i, /\bthis submission\b/i, /\bas mentioned\b/i, /\bin summary\b/i,
+    /\bit can be seen\b/i, /\b(?:this|the) submission\b/i, /\bas mentioned\b/i, /\bin summary\b/i,
     /\bon the whole\b/i, /\bdelve\w*\b/i, /\bgrasp\b/i, /\bnuanced\b/i, /\btapestry\b/i,
     /\butiliz\w*\b/i, /\bleverag\w*\s+(?:the|this|their|it)\b/i, /\bstreamlin\w*\b/i,
     /\bdive into\b/i, /\bfoster\w*\b/i, /\bgarner\w*\b/i, /\bit'?s worth\b/i, /\bat its core\b/i,
@@ -2261,7 +2261,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
   async function rewriteBannedSentence(/** @type {string} */ sentence) {
     try {
       const prompt = `Rewrite this single sentence of student feedback. Keep the exact same factual content, specific details, and meaning — only fix the phrasing:
-- Never use any of these words/phrases, or any inflection of them: demonstrates, showcases, commendable, proficiency, exhibits, furthermore, additionally, in conclusion, overall, it's worth noting, it's important to, reflects, highlights, clear understanding, well-structured, effectively, excellent work, great job, well done, strong effort, shows a good understanding, moving forward, ensure that, it's clear that, you've shown, noteworthy, impressive, solid work/foundation/effort, thorough, comprehensive, robust (unless "statistically robust" or "robust to X"), valuable, insightful, thoughtful, meaningful, crucial, significant (unless "statistically significant"), notable, delve, grasp, nuanced, utilize, leverage, streamline, foster, garner.
+- Never use any of these words/phrases, or any inflection or recombination of them: demonstrates, showcases, commendable, proficiency, exhibits, furthermore, additionally, in conclusion, overall, it's worth noting, it's important to, reflects, highlights, clear understanding, well-structured, effectively, excellent work, excellent job, great work, great job, well done, strong effort, shows a good understanding, moving forward, ensure that, it's clear that, you've shown, noteworthy, impressive, solid work/foundation/effort, thorough, comprehensive, robust (unless "statistically robust" or "robust to X"), valuable, insightful, thoughtful, meaningful, crucial, significant (unless "statistically significant"), notable, this submission, the submission, delve, grasp, nuanced, utilize, leverage, streamline, foster, garner.
 - Address the student directly as "you"/"your" — never third person ("the student", "this student").
 - Keep roughly the same length. Do not add new claims or drop specific details (names, counts, technical terms) that were in the original.
 
