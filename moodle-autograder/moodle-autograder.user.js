@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.20
+// @version      2.6.21
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2631,23 +2631,32 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     const liveQfToken     = [...document.querySelectorAll('input[name^="_qf__"]')].map(e => /** @type {HTMLInputElement} */(e).name)[0] || null;
     console.log('[MAG] postGrade: live session fields — advancedgradinginstanceid:', liveAgInstance, '| _qf__ token:', liveQfToken);
 
-    // 2. Copy form inputs into FormData.
-    //    Exclusions:
-    //    • submit/button/reset/image — browser submits only the clicked one; include none
-    //    • advancedgrading[criteria][N][] blank placeholders — PHP parse_str merges these with
-    //      our [levelid] entry into a mixed numeric/string-key array; Moodle rejects that
+    // 2. Copy form inputs into FormData. Only submit/button/reset/image are skipped
+    //    (a browser submits just the clicked one). The advancedgrading[criteria][N][] blank
+    //    placeholders ARE kept — Moodle's own save sends them and its advanced-grading form
+    //    element expects them back to rebuild the criteria array; dropping them was why the
+    //    rubric silently didn't persist (confirmed by diffing a real manual save).
     const fd = new FormData();
     for (const el of /** @type {HTMLInputElement[]} */([...form.querySelectorAll('input, select, textarea')])) {
       if (!el.name) continue;
       if (el.type === 'submit' || el.type === 'button' || el.type === 'reset' || el.type === 'image') continue;
-      if (/^advancedgrading\[criteria\]\[\d+\]\[\]$/.test(el.name)) continue;
       if (el.type === 'radio' || el.type === 'checkbox') {
         if (el.checked) fd.append(el.name, el.value);
       } else {
         fd.append(el.name, el.value);
       }
     }
+    // Guarantee the blank per-criterion placeholder exists for every rubric criterion even
+    // if the fetched form didn't render it.
+    for (const criterion of rubric || []) {
+      const cid = /** @type {any} */(criterion).criterionId;
+      if (cid && ![...fd.keys()].includes(`advancedgrading[criteria][${cid}][]`)) {
+        fd.append(`advancedgrading[criteria][${cid}][]`, '');
+      }
+    }
     fd.set('sesskey', sesskey);
+    if (!fd.has('action')) fd.set('action', 'submitgrade');
+    fd.set('ajax', '0');
 
     // 3. Build criterion prefix map from the form's own radio/hidden inputs.
     //    Keeps an ordered array for index-based fallback (when criterionId is null).
@@ -2702,17 +2711,10 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       fd.set('assignfeedbackcomments_editor[format]', '1');
     }
 
-    // 5b. Force session-scoped fields to this live page's values (see liveVal above). Also
-    // give every rubric criterion a remarkformat — Moodle's rubric handler expects one
-    // alongside each [remark], and its absence is a suspect for the silent no-save.
-    if (liveAgInstance != null) fd.set('advancedgradinginstanceid', liveAgInstance);
+    // 5b. Session fields: keep the fetched form's advancedgradinginstanceid (it pairs with
+    // the ?action=grade endpoint we POST to). A real manual save sends NO remarkformat and
+    // NO ajax=1 — matched above.
     fd.set('sesskey', getSesskey());
-    for (const criterion of rubric || []) {
-      const cid = /** @type {any} */(criterion).criterionId;
-      if (cid && !fd.has(`advancedgrading[criteria][${cid}][remarkformat]`)) {
-        fd.set(`advancedgrading[criteria][${cid}][remarkformat]`, '0');
-      }
-    }
 
     const bodyStr = fdToBody(fd);
     setStatus(`Posting grade for ${student.name}…`, '#c9a0ff');
@@ -2723,14 +2725,16 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       [...fd.entries()].filter(([k]) => /advancedgrading|sesskey|_qf__|gradingmethod|attemptnumber/i.test(k))
         .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`));
 
-    // 6. Try the web service first (works on some Moodle installs).
-    //    Moodle 4.x AMD passes jsonformdata as JSON.stringify(urlEncodedString).
+    // 6. Web service — the same call Moodle's own AMD grader makes. A captured real call
+    //    passes ONLY assignmentid + userid + jsonformdata (attemptnumber lives inside the
+    //    form data, NOT as a top-level arg); sending it as an arg is an unexpected key and
+    //    was the "Invalid parameter" rejection. jsonformdata is JSON.stringify of the
+    //    urlencoded string.
     try {
       await moodleAjax('mod_assign_submit_grading_form', {
-        assignmentid:  parseInt(assignDbId),
-        userid:        parseInt(student.uid),
-        attemptnumber: -1,
-        jsonformdata:  JSON.stringify(bodyStr),
+        assignmentid: assignDbId,
+        userid:       parseInt(student.uid),
+        jsonformdata: JSON.stringify(bodyStr),
       });
       console.log('[MAG] postGrade: web service accepted');
       return true;
