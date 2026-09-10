@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.24
+// @version      2.6.25
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4592,18 +4592,53 @@ ${checkInstructions}`;
           if (moveBtn) moveBtn.onclick = async () => {
             cancelTimer();
             _cancelLiveTimers();
-            clearMoodleFormDirty();
+            clearMoodleFormDirty(); // grade is already saved server-side — form is clean, truthfully
 
-            // The grade is saved by postGrade before this row appears, so a hard page-load
-            // is non-destructive. Navigate only on a TRUSTED next uid that differs from this
-            // student.
-            const { uid, trusted } = await resolveNextUid();
-            if (uid && trusted && uid !== student.uid) {
-              hardNavTo(uid);
-              return;
-            }
-            console.warn('[MAG] Move: no trusted next student (uid=' + (uid || 'none') + ', trusted=' + trusted + ', student=' + student.uid + '). Grade is saved — advance with Moodle\'s Next arrow.');
-            setStatus('Grade saved. Auto-advance unavailable here — use Moodle\'s Next (▶) arrow.', '#ffb060');
+            // Hard page-load fallback (closes the panel, but always works). Only used if
+            // in-page nav can't be done.
+            const hardFallback = async () => {
+              const { uid } = await resolveNextUid();
+              if (uid && uid !== student.uid) hardNavTo(uid);
+              else setStatus('Grade saved. Use Moodle\'s Next (▶) arrow to continue.', '#ffb060');
+            };
+
+            // Preferred: Moodle's OWN in-page (SPA) navigation, so the MAG panel stays open —
+            // the navWatcher sees the user change and onMoodleNavigated updates the card (and
+            // auto-grades the next student in Grade-All/Grade-N mode). The grade is saved via
+            // the web service and the form's been marked clean, so this should not prompt.
+            const nextBtn = /** @type {HTMLElement|null} */(document.querySelector(
+              'a[data-action="next-user"], [data-action="next-user"], [data-action="nextuser"]'
+            ));
+            if (!nextBtn) { await hardFallback(); return; }
+
+            const beforeUrl = new URL(location.href).searchParams.get('userid') || '';
+            const beforeSel = graderSelect()?.getAttribute('data-currentuserid') || graderSelect()?.value || '';
+            nextBtn.click();
+
+            let ticks = 0;
+            const poll = setInterval(() => {
+              ticks++;
+              // Unsaved-changes dialog popped anyway → the grade IS saved, so cancel it
+              // (never let Moodle's broken save run) and hard-navigate instead.
+              const dlg = [...document.querySelectorAll('.modal.show, [role="dialog"]')].find(m =>
+                /** @type {HTMLElement} */(m).offsetParent !== null
+                && /unsaved changes|save the changes/i.test(m.textContent || ''));
+              if (dlg) {
+                ([...dlg.querySelectorAll('button, .btn')].find(b => /cancel/i.test(b.textContent || '')))?.click();
+                clearInterval(poll);
+                console.warn('[MAG] Move: dialog appeared despite clean form — cancelled, hard-navigating');
+                hardFallback();
+                return;
+              }
+              // Moved in-page → done; navWatcher/onMoodleNavigated takes it from here.
+              const nowUrl = new URL(location.href).searchParams.get('userid') || '';
+              const nowSel = graderSelect()?.getAttribute('data-currentuserid') || graderSelect()?.value || '';
+              if ((nowUrl && nowUrl !== beforeUrl) || (nowSel && nowSel !== beforeSel)) {
+                clearInterval(poll);
+                return;
+              }
+              if (ticks >= 14) { clearInterval(poll); hardFallback(); } // ~2.1s, nothing moved
+            }, 150);
           };
         }
       } catch (err) {
