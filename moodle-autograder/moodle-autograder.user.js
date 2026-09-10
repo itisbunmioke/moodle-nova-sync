@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.7
+// @version      2.6.8
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -120,35 +120,45 @@
   };
   const _cancelLiveTimers = () => { _liveTimers.forEach(clearTimeout); _liveTimers.clear(); };
 
-  // Best-effort clear of Moodle's "form has unsaved changes" flag — tries the legacy YUI
-  // global and the Moodle 4.x AMD module (either may be the one present on a given build).
-  // Called after cosmetic live-DOM updates so navigation doesn't trip the unsaved-changes
-  // dialog or Moodle's buggy post-submit cleanup.
+  // Tell Moodle its grading form has no unsaved changes — the grade is already saved by
+  // postGrade's web-service call, so this is truthful, not a lie. Without it, navigating to
+  // another student triggers Moodle's "Unsaved changes" dialog (which sits UNDER the MAG
+  // panel, so it silently blocks navigation).
+  //
+  // Must run SYNCHRONOUSLY so it takes effect before the next-user click that follows it.
+  // RequireJS's `require('name')` (string form, no callback) returns an already-loaded
+  // module immediately; the callback form fires a tick too late. `core_form/changechecker`
+  // is always loaded on a grading page. markFormSubmitted re-baselines the form as clean;
+  // resetFormDirtyState is the older name for the same idea.
   function clearMoodleFormDirty() {
+    const form = document.querySelector('form#mform1');
     try { /** @type {any} */(window).M?.core_formchangechecker?.reset_form_dirty_state?.(); } catch {}
     const req = /** @type {any} */(window).require;
-    if (typeof req === 'function') {
-      try {
-        req(['core_form/changechecker'], (/** @type {any} */ cc) => {
-          try {
-            const form = document.querySelector('form#mform1');
-            if (form && cc?.resetFormDirtyState) cc.resetFormDirtyState(form);
-          } catch {}
-        });
-      } catch {}
-    }
+    if (typeof req !== 'function' || !form) return;
+    try {
+      const cc = req('core_form/changechecker');
+      if (cc?.markFormSubmitted)        cc.markFormSubmitted(form);
+      else if (cc?.resetFormDirtyState) cc.resetFormDirtyState(form);
+      return;
+    } catch { /* not loaded yet — fall through to async, best-effort */ }
+    try {
+      req(['core_form/changechecker'], (/** @type {any} */ cc) => {
+        try { (cc?.markFormSubmitted || cc?.resetFormDirtyState)?.call(cc, form); } catch {}
+      });
+    } catch {}
   }
 
   // After saving a grade the AMD grader still shows the old (unselected) rubric because the
   // SPA cached its state before we posted. We fix this by directly updating the live DOM.
   //
   // opts.cosmetic: the grade is ALREADY saved authoritatively (postGrade web-service call),
-  // so this pass only needs to make the panel *look* right — it must not fire .click() on
-  // rubric cells or input/change on textareas. Those synthetic events dirty Moodle's form
-  // and drive its own click handler / auto-advance / _handleFormSubmissionResponse cleanup,
-  // whose getFormFromChild(undefined).closest crash was the root of the navigation flicker.
-  // Cosmetic mode sets classes and .value directly, touches no hidden inputs, and clears the
-  // dirty flag at the end so the form reads as pristine for the next navigation.
+  // so this pass must not touch Moodle's form at all — no .click() on rubric cells, no
+  // writes to any form input/textarea. Those dirty the form: synthetic clicks drive
+  // Moodle's own click handler / auto-advance / _handleFormSubmissionResponse cleanup (the
+  // getFormFromChild(undefined).closest crash → flicker storm), and .value writes get
+  // snapshotted as unsaved changes (the panel-obscured Unsaved-changes dialog that blocks
+  // navigation). Cosmetic mode ONLY sets rubric-cell CSS classes (invisible to the form's
+  // change-checker) then re-baselines the checker as clean and returns before Phase 2.
   async function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean, cosmetic?: boolean}} */ opts = {}) {
     // immediate: true → skip all setTimeout retries (safe to call just before navigation)
     const skipDelays = !!opts.immediate;
@@ -254,6 +264,14 @@
       }
     }
 
+    // Cosmetic mode stops here. Phase 2 writes .value into the remark and feedback
+    // textareas, which Moodle's change-checker snapshots as "unsaved changes" — the exact
+    // thing that pops its (panel-obscured) Unsaved-changes dialog and blocks navigation.
+    // postGrade already saved the real remarks and feedback server-side; a pristine form
+    // that navigates cleanly matters more than the current page briefly showing stale
+    // content the user is navigating away from anyway. Re-baseline the checker and return.
+    if (cosmetic) { clearMoodleFormDirty(); return; }
+
     // ── Phase 2: write justifications to remark textareas ────────────────────
     // Runs immediately AND again after 700 ms (in case AMD reveals textareas
     // asynchronously after the cell clicks above).
@@ -301,10 +319,8 @@
 
         if (ta) {
           ta.value = score.justification;
-          if (!cosmetic) {
-            ta.dispatchEvent(new Event('input',  { bubbles: true }));
-            ta.dispatchEvent(new Event('change', { bubbles: true }));
-          }
+          ta.dispatchEvent(new Event('input',  { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
           console.log('[MAG] Wrote remark for criterion', cid ?? score.criterionIndex);
         } else {
           console.warn('[MAG] Remark textarea not found for criterion', cid ?? score.criterionIndex,
@@ -359,9 +375,6 @@
           ed.setContent(feedbackHtml);
           ed.save?.(); // sync content back to textarea
           if (ta) ta.value = feedback;
-          // setContent marks the editor dirty; in cosmetic mode the grade is already saved
-          // so re-baseline it as clean.
-          if (cosmetic) { try { ed.setDirty?.(false); } catch {} }
           console.log('[MAG] Feedback set via TinyMCE API', edId);
           return;
         }
@@ -377,10 +390,8 @@
         // Strategy C: Atto / plain textarea (no iframe)
         if (ta) {
           ta.value = feedback;
-          if (!cosmetic) {
-            ta.dispatchEvent(new Event('input',  { bubbles: true }));
-            ta.dispatchEvent(new Event('change', { bubbles: true }));
-          }
+          ta.dispatchEvent(new Event('input',  { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
           console.log('[MAG] Feedback written to plain textarea');
         }
       };
@@ -389,11 +400,6 @@
       if (!skipDelays) _trackTimer(applyFeedbackLive, 400);  // pass 2: after iframe loads
       if (!skipDelays) _trackTimer(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
     }
-
-    // Cosmetic pass is done fiddling with the visible form — make sure Moodle considers it
-    // pristine so the next navigation doesn't trip the unsaved-changes dialog or its buggy
-    // post-submit cleanup (the flicker root cause).
-    if (cosmetic) clearMoodleFormDirty();
   }
 
   // Call Moodle's internal AJAX service at /lib/ajax/service.php.
