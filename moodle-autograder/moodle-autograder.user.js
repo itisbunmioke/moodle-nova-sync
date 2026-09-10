@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.13
+// @version      2.6.14
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -280,10 +280,10 @@
                || (cell.id.match(/(?:^rubric|^advancedgrading)-criteria-(\d+)-levels-/) || [])[1]
                || /** @type {any} */(cell).dataset?.criterionid
                || null;
-      // Set the hidden levelid input too (cosmetic mode included). It's a direct .value
-      // assignment (no event), and it means the live form carries the correct rubric — so
-      // if Moodle's own "Save & continue" ends up submitting it, it saves the right grade,
-      // not a blank rubric. postGrade already saved server-side regardless.
+      // Set the hidden levelid input too (cosmetic mode included) — direct .value, no event.
+      // Move navigates by hard page-load so this isn't load-bearing, but if the user clicks
+      // Stay and later saves the form in Moodle's own UI, the rubric is correct rather than
+      // blank. postGrade already saved server-side regardless.
       if (cid) {
         const inp = /** @type {HTMLInputElement|null} */(
           document.querySelector(`input[name="advancedgrading[criteria][${cid}][levelid]"]`)
@@ -4411,51 +4411,58 @@ ${checkInstructions}`;
           document.addEventListener('keydown', keyHandler);
           doneBtn.onclick = dismiss;
 
-          // The grade is already saved by postGrade. The cosmetic pass filled the live form
-          // to MATCH (rubric levelids, remarks, feedback) without any synthetic clicks or
-          // events. So it's now safe to let Moodle's own save/navigate run: if it re-submits
-          // the form it just re-saves the same correct grade. Move clicks next-user and, when
-          // Moodle's "Unsaved changes" dialog appears, clicks its "Save & continue" — exactly
-          // what the user asked for. Hard page-navigation is the fallback if that stalls.
-          const uidFromSelect = () => /** @type {HTMLSelectElement|null} */(document.querySelector(
+          // The grade is already saved by postGrade (via its form-POST fallback — Moodle's
+          // own mod_assign_submit_grading_form web service rejects this rubric's field
+          // shape with "Invalid parameter", which also breaks Moodle's own "Save &
+          // continue"). So Move does NOT go through any Moodle form save: it reads the next
+          // student's uid and hard-navigates there. Grade's already persisted; nothing lost.
+          const graderSelect = () => /** @type {HTMLSelectElement|null} */(document.querySelector(
             'select#change-user-select, select[data-action="change-user"]'
-          ))?.value?.trim() || '';
-          const stillOnThisStudent = () => { const u = uidFromSelect(); return !u || u === student.uid; };
-
-          // Find Moodle's unsaved-changes prompt by TEXT (its container class varies by
-          // build), climb to a dialog-ish box, click its Save/continue button.
-          const clickUnsavedDialogSave = () => {
-            const marker = [...document.querySelectorAll('.modal-title, h1, h2, h3, h4, h5, p, div, span')]
-              .find(el => el instanceof HTMLElement && el.offsetParent !== null
-                       && (el.textContent || '').length < 300
-                       && /unsaved changes|save the changes and continue/i.test(el.textContent || ''));
-            if (!marker) return false;
-            let box = /** @type {HTMLElement} */(marker);
-            for (let i = 0; i < 10 && box.parentElement; i++) {
-              box = box.parentElement;
-              if (box.matches('.modal, [role="dialog"], .moodle-dialogue, [data-region*="modal"], .modal-dialog')) break;
-            }
-            const btns = /** @type {HTMLElement[]} */([...box.querySelectorAll('button, a.btn, input[type="button"], input[type="submit"], [data-action]')])
-              .filter(b => b.offsetParent !== null);
-            const save = btns.find(b => /save.*(continue|next|and)|^continue$/i.test((b.textContent || /** @type {HTMLInputElement} */(b).value || '').trim()))
-                      || btns.find(b => b.getAttribute('data-action') === 'save')
-                      || btns.find(b => b.classList.contains('btn-primary'));
-            if (save) {
-              console.warn('[MAG] Move: unsaved-changes dialog Save →', (save.textContent || /** @type {HTMLInputElement} */(save).value || '').trim());
-              save.click();
-              return true;
-            }
-            console.warn('[MAG] Move: found "unsaved changes" text but no Save button. Box:', box.outerHTML.slice(0, 400));
-            return false;
+          ));
+          // The <select> often has no options on the AMD grader; the current user id lives in
+          // its data-currentuserid attribute, and data-selected is the pending next user.
+          const currentGraderUid = () => {
+            const s = graderSelect();
+            return (s?.value?.trim()) || s?.getAttribute('data-currentuserid') || '';
           };
 
-          // Full page load to a specific student on the AMD grader — bypasses the SPA's
-          // dirty check entirely. Grade is already saved so nothing is lost.
+          // Full page load to a specific student on the AMD grader. Grade is already saved.
           const hardNavTo = (/** @type {string} */ uid) => {
             const url = new URL(location.href);
             url.searchParams.set('userid', uid);
             url.searchParams.set('action', 'grader');
+            console.warn('[MAG] Move: hard-navigating to userid', uid);
             location.assign(url.href);
+          };
+
+          // The uid to move to. Sources, best first:
+          //  1. the Next-user <a>'s href (userid param) — Moodle computes the real next user
+          //  2. re-fetch the traditional grade page and read select[name="userid"] sequence
+          //  3. select[data-selected] (pending next user grading_navigation last wrote —
+          //     instant but can be stale, so it's the last resort)
+          const resolveNextUid = async () => {
+            const cur = currentGraderUid() || student.uid;
+
+            const a = /** @type {HTMLAnchorElement|null} */(document.querySelector(
+              'a[data-action="next-user"], a[data-action="nextuser"], [data-region="user-selector"] a[href*="userid"]'
+            ));
+            const m = (a?.getAttribute('href') || '').match(/[?&]userid=(\d+)/);
+            if (m && m[1] !== cur) { console.warn('[MAG] Move: next uid from next-user href:', m[1]); return m[1]; }
+
+            try {
+              const resp = await xhr('GET', `${location.origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`);
+              const doc  = new DOMParser().parseFromString(resp.responseText, 'text/html');
+              const us   = /** @type {HTMLSelectElement|null} */(doc.querySelector('select[name="userid"]'));
+              if (us) {
+                const opts = [...us.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || ''));
+                const i = opts.indexOf(cur);
+                if (i >= 0 && opts[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', opts[i + 1]); return opts[i + 1]; }
+              }
+            } catch (e) { console.warn('[MAG] Move: grade-page fetch for next uid failed:', /** @type {any} */(e).message); }
+
+            const pending = graderSelect()?.getAttribute('data-selected');
+            if (pending && /^\d+$/.test(pending) && pending !== cur) { console.warn('[MAG] Move: next uid from data-selected (may be stale):', pending); return pending; }
+            return '';
           };
 
           if (stayBtn) stayBtn.onclick = () => {
@@ -4464,52 +4471,22 @@ ${checkInstructions}`;
             if (doneBtn) { doneBtn.textContent = 'Done ✓'; doneBtn.onclick = () => reviewOverlay.classList.remove('open'); }
           };
 
-          const nextUidFromOptions = (/** @type {string} */ from) => {
-            const s = /** @type {HTMLSelectElement|null} */(document.querySelector(
-              'select#change-user-select, select[data-action="change-user"]'
-            ));
-            if (!s) return '';
-            const opts = [...s.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || ''));
-            const i = opts.indexOf(from);
-            return (i >= 0 && opts[i + 1]) ? opts[i + 1] : '';
-          };
-
-          if (moveBtn) moveBtn.onclick = () => {
+          if (moveBtn) moveBtn.onclick = async () => {
             cancelTimer();
-            if (!stillOnThisStudent()) return; // Moodle already advanced; navWatcher handles it
             _cancelLiveTimers();
-            clearMoodleFormDirty(); // best-effort; also kills the beforeunload prompt
+            clearMoodleFormDirty();
 
-            const startUid = student.uid;
-            const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
-              '[data-action="next-user"], [data-action="nextuser"], [data-region="user-selector"] a[href*="userid"]'
+            const nextUid = await resolveNextUid();
+            if (nextUid && nextUid !== currentGraderUid()) { hardNavTo(nextUid); return; }
+
+            // Couldn't resolve a next student — fall back to Moodle's own button and hope it
+            // navigates (grade's saved, so even if its dialog appears the worst case is the
+            // user clicks through it).
+            console.warn('[MAG] Move: could not resolve next uid — falling back to Moodle next-user button');
+            const nb = /** @type {HTMLElement|null} */(document.querySelector(
+              'a[data-action="next-user"], [data-action="next-user"], [data-action="nextuser"]'
             ));
-            if (nextUser) nextUser.click(); else { document.getElementById('mag-next-btn')?.click(); return; }
-
-            // Moodle now either navigates straight away, shows the unsaved-changes dialog, or
-            // stalls. Poll and resolve: clean nav → done; dialog → click its Save & continue;
-            // stuck → hard page-load to the next student (grade's already saved).
-            let ticks = 0, savedClicked = false;
-            const poll = setInterval(() => {
-              ticks++;
-              const sel = uidFromSelect();
-              const moved = !!sel && sel !== startUid;
-              const modalUp = !!document.querySelector('.modal.show, .moodle-dialogue');
-              if (moved && !modalUp) { clearInterval(poll); return; } // clean nav
-              if (!savedClicked && clickUnsavedDialogSave()) { savedClicked = true; return; }
-              if (ticks >= 20) { // ~3s
-                clearInterval(poll);
-                const target = moved ? sel : nextUidFromOptions(startUid);
-                if (target) { console.warn('[MAG] Move: forcing hard-nav to', target); hardNavTo(target); return; }
-                // Nothing resolved — dump the DOM so the next round has real data.
-                console.warn('[MAG] Move STUCK (savedClicked=' + savedClicked + ').');
-                console.warn('[MAG]  modals:', [...document.querySelectorAll('.modal, [role="dialog"], .moodle-dialogue, [data-region*="modal"]')]
-                  .map(m => `${m.tagName}.${m.className} vis=${/** @type {HTMLElement} */(m).offsetParent !== null} :: ${(m.textContent || '').replace(/\s+/g, ' ').slice(0, 140)}`));
-                console.warn('[MAG]  nav controls:', [...document.querySelectorAll('[data-action], [data-region="user-selector"] *')]
-                  .map(e => `${e.tagName}[data-action=${e.getAttribute('data-action')}] .${e.className}`.slice(0, 90)).slice(0, 30));
-                console.warn('[MAG]  user select:', document.querySelector('select#change-user-select, select[data-action="change-user"]')?.outerHTML?.slice(0, 600));
-              }
-            }, 150);
+            if (nb) nb.click(); else document.getElementById('mag-next-btn')?.click();
           };
         }
       } catch (err) {
