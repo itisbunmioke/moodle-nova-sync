@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.23
+// @version      2.6.24
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4544,7 +4544,10 @@ ${checkInstructions}`;
           // MAG's own session list (built by runGradeOne), the Next-user link href, or the
           // plain grade page's participant list. data-selected is a last resort, untrusted.
           const resolveNextUid = async () => {
-            const cur = currentGraderUid() || student.uid;
+            // Anchor on THIS card's student — that's who postGrade just saved a grade for.
+            // The grader <select>'s data-currentuserid can be stale (it read 6875 while the
+            // panel/URL were on 10083), which made the participant-list lookup miss.
+            const cur = student.uid || currentGraderUid();
 
             const fromSession = magNextUidFor(student.uid) || magNextUidFor(cur);
             if (fromSession && fromSession !== cur) { console.warn('[MAG] Move: next uid from session list:', fromSession); return { uid: fromSession, trusted: true }; }
@@ -4591,20 +4594,15 @@ ${checkInstructions}`;
             _cancelLiveTimers();
             clearMoodleFormDirty();
 
-            // The grade is verified-saved by postGrade before this row ever appears, so a
-            // hard page-load is non-destructive. Moodle's own SPA "next" won't move until a
-            // save goes through ITS path (which fails on this assignment's web service), so
-            // hard-nav is the only reliable route.
+            // The grade is saved by postGrade before this row appears, so a hard page-load
+            // is non-destructive. Navigate only on a TRUSTED next uid that differs from this
+            // student.
             const { uid, trusted } = await resolveNextUid();
-            const cur = currentGraderUid();
-            // Only navigate on a TRUSTED next uid. An untrusted/wrong target reloads the
-            // same page and looks like it "wiped" the grade (it didn't — the cosmetic paint
-            // just isn't reloaded). Better to leave the user put.
-            if (uid && trusted && uid !== cur && uid !== student.uid) {
+            if (uid && trusted && uid !== student.uid) {
               hardNavTo(uid);
               return;
             }
-            console.warn('[MAG] Move: no trusted next student (uid=' + (uid || 'none') + ', trusted=' + trusted + ', cur=' + cur + '). Grade is saved — advance with Moodle\'s Next arrow.');
+            console.warn('[MAG] Move: no trusted next student (uid=' + (uid || 'none') + ', trusted=' + trusted + ', student=' + student.uid + '). Grade is saved — advance with Moodle\'s Next arrow.');
             setStatus('Grade saved. Auto-advance unavailable here — use Moodle\'s Next (▶) arrow.', '#ffb060');
           };
         }
