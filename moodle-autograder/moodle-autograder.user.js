@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.6
+// @version      2.6.7
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -120,14 +120,39 @@
   };
   const _cancelLiveTimers = () => { _liveTimers.forEach(clearTimeout); _liveTimers.clear(); };
 
-  // After saving a grade via form POST the AMD grader still shows the old (unselected) rubric
-  // because the SPA cached its state before we posted. We fix this by directly updating the
-  // live DOM: find each rubric level cell by its ID suffix, clear siblings, mark it checked,
-  // and fire a click so Moodle's own cell-click handler (if present) can also run.
-  // Also update the Atto feedback editor div and its backing textarea.
-  async function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean}} */ opts = {}) {
+  // Best-effort clear of Moodle's "form has unsaved changes" flag — tries the legacy YUI
+  // global and the Moodle 4.x AMD module (either may be the one present on a given build).
+  // Called after cosmetic live-DOM updates so navigation doesn't trip the unsaved-changes
+  // dialog or Moodle's buggy post-submit cleanup.
+  function clearMoodleFormDirty() {
+    try { /** @type {any} */(window).M?.core_formchangechecker?.reset_form_dirty_state?.(); } catch {}
+    const req = /** @type {any} */(window).require;
+    if (typeof req === 'function') {
+      try {
+        req(['core_form/changechecker'], (/** @type {any} */ cc) => {
+          try {
+            const form = document.querySelector('form#mform1');
+            if (form && cc?.resetFormDirtyState) cc.resetFormDirtyState(form);
+          } catch {}
+        });
+      } catch {}
+    }
+  }
+
+  // After saving a grade the AMD grader still shows the old (unselected) rubric because the
+  // SPA cached its state before we posted. We fix this by directly updating the live DOM.
+  //
+  // opts.cosmetic: the grade is ALREADY saved authoritatively (postGrade web-service call),
+  // so this pass only needs to make the panel *look* right — it must not fire .click() on
+  // rubric cells or input/change on textareas. Those synthetic events dirty Moodle's form
+  // and drive its own click handler / auto-advance / _handleFormSubmissionResponse cleanup,
+  // whose getFormFromChild(undefined).closest crash was the root of the navigation flicker.
+  // Cosmetic mode sets classes and .value directly, touches no hidden inputs, and clears the
+  // dirty flag at the end so the form reads as pristine for the next navigation.
+  async function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean, cosmetic?: boolean}} */ opts = {}) {
     // immediate: true → skip all setTimeout retries (safe to call just before navigation)
     const skipDelays = !!opts.immediate;
+    const cosmetic   = !!opts.cosmetic;
     // Self-contained (this function has no student/uid parameter): captured so Phase 2 can
     // detect if Moodle silently navigated away mid-Phase-1 (see the inter-click await below)
     // and skip writing remarks to what would now be a different student's textareas.
@@ -168,38 +193,45 @@
       // toggle-off logic when we click a cell that already has 'checked'.
       const alreadySelected = cell.classList.contains('checked')
                            || cell.getAttribute('aria-checked') === 'true';
-      if (!alreadySelected) {
-        // Clear sibling cells first (excluding target so the click fires on uncheckd state).
-        if (row) {
-          for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
-            if (sib !== cell) {
-              sib.classList.remove('checked', 'selected', 'currentlevel');
-              sib.removeAttribute('aria-checked');
-            }
+      const clearSiblings = () => {
+        if (!row) return;
+        for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+          if (sib !== cell) {
+            sib.classList.remove('checked', 'selected', 'currentlevel');
+            sib.removeAttribute('aria-checked');
           }
         }
-        try { cell.click(); } catch {}
-        // Manual fallback: if Moodle's handler didn't add 'checked' (no click handler on this build)
-        if (!cell.classList.contains('checked') && cell.getAttribute('aria-checked') !== 'true') {
-          if (row) {
-            for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
-              sib.classList.remove('checked', 'selected', 'currentlevel');
-              sib.removeAttribute('aria-checked');
-            }
-          }
+      };
+      if (!alreadySelected) {
+        clearSiblings();
+        if (cosmetic) {
+          // No synthetic click — that's what drives Moodle's dirty flag / auto-advance /
+          // buggy post-submit cleanup. Just set the visual state; the grade itself is
+          // already saved server-side by postGrade.
           cell.classList.add('checked');
           cell.setAttribute('aria-checked', 'true');
+        } else {
+          try { cell.click(); } catch {}
+          // Manual fallback: if Moodle's handler didn't add 'checked' (no click handler on this build)
+          if (!cell.classList.contains('checked') && cell.getAttribute('aria-checked') !== 'true') {
+            clearSiblings();
+            cell.classList.add('checked');
+            cell.setAttribute('aria-checked', 'true');
+          }
+          // Let Moodle's own click handler (and any debounced completion-check it
+          // schedules) settle before the next cell's click fires — see the note above.
+          await sleep(60);
         }
-        // Let Moodle's own click handler (and any debounced completion-check it
-        // schedules) settle before the next cell's click fires — see the note above.
-        await sleep(60);
       }
 
       const cid = criterion?.criterionId
                || (cell.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1]
                || /** @type {any} */(cell).dataset?.criterionid
                || null;
-      if (cid) {
+      // In cosmetic mode leave the hidden levelid inputs untouched: creating or changing
+      // them is a form-structure change Moodle's change-checker snapshots as "dirty".
+      // postGrade already submitted the correct levelids.
+      if (cid && !cosmetic) {
         const inp = /** @type {HTMLInputElement|null} */(
           document.querySelector(`input[name="advancedgrading[criteria][${cid}][levelid]"]`)
         );
@@ -269,8 +301,10 @@
 
         if (ta) {
           ta.value = score.justification;
-          ta.dispatchEvent(new Event('input',  { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          if (!cosmetic) {
+            ta.dispatchEvent(new Event('input',  { bubbles: true }));
+            ta.dispatchEvent(new Event('change', { bubbles: true }));
+          }
           console.log('[MAG] Wrote remark for criterion', cid ?? score.criterionIndex);
         } else {
           console.warn('[MAG] Remark textarea not found for criterion', cid ?? score.criterionIndex,
@@ -325,6 +359,9 @@
           ed.setContent(feedbackHtml);
           ed.save?.(); // sync content back to textarea
           if (ta) ta.value = feedback;
+          // setContent marks the editor dirty; in cosmetic mode the grade is already saved
+          // so re-baseline it as clean.
+          if (cosmetic) { try { ed.setDirty?.(false); } catch {} }
           console.log('[MAG] Feedback set via TinyMCE API', edId);
           return;
         }
@@ -340,8 +377,10 @@
         // Strategy C: Atto / plain textarea (no iframe)
         if (ta) {
           ta.value = feedback;
-          ta.dispatchEvent(new Event('input',  { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          if (!cosmetic) {
+            ta.dispatchEvent(new Event('input',  { bubbles: true }));
+            ta.dispatchEvent(new Event('change', { bubbles: true }));
+          }
           console.log('[MAG] Feedback written to plain textarea');
         }
       };
@@ -350,6 +389,11 @@
       if (!skipDelays) _trackTimer(applyFeedbackLive, 400);  // pass 2: after iframe loads
       if (!skipDelays) _trackTimer(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
     }
+
+    // Cosmetic pass is done fiddling with the visible form — make sure Moodle considers it
+    // pristine so the next navigation doesn't trip the unsaved-changes dialog or its buggy
+    // post-submit cleanup (the flicker root cause).
+    if (cosmetic) clearMoodleFormDirty();
   }
 
   // Call Moodle's internal AJAX service at /lib/ajax/service.php.
@@ -4248,7 +4292,8 @@ ${checkInstructions}`;
           return;
         }
 
-        // Grade One path (manual confirmation): use AJAX post + AMD live-DOM update.
+        // Grade One path (manual confirmation): the grade is now saved authoritatively by
+        // postGrade's web-service call. Everything below is presentation only.
         await postGrade(student, rubric, editedResult, assignmentId);
 
         // Complete the bar
@@ -4258,14 +4303,23 @@ ${checkInstructions}`;
         document.getElementById(`mag-status-${student.uid}`).className   = 'mag-card-status done';
         document.getElementById(`mag-card-${student.uid}`).style.opacity = '0.7';
 
-        applyResultToLiveDom(rubric, editedResult);
-        // Re-apply after 2 s in case Moodle's AMD re-rendered the panel.
-        // Tracked so navigation can cancel it before it fires on the next student's page.
-        _trackTimer(() => applyResultToLiveDom(rubric, editedResult), 2000);
-        // applyResultToLiveDom's Phase 2 (remarks/feedback) schedules its own staggered
-        // retries up to 1500ms out. Stay/Move below wait until this point before letting
-        // Moodle process a save+navigate — see the comment on that wait for why.
-        const applyPassesSettleBy = Date.now() + 1500;
+        // Cosmetic-only live-DOM sync: no synthetic clicks or input/change events, so it
+        // can't dirty Moodle's form, drive its rubric handler / auto-advance, or set up the
+        // getFormFromChild(undefined) crash in _handleFormSubmissionResponse — the thing
+        // that turned every post-and-navigate into a flicker storm. The grade is already
+        // saved; this just makes the panel look right.
+        applyResultToLiveDom(rubric, editedResult, { cosmetic: true, immediate: true });
+        // Re-apply once after 2 s (still cosmetic) in case Moodle's AMD re-rendered the
+        // panel from its internal model and wiped our classes. Tracked so navigation cancels
+        // it — and it double-checks we're still on this student, so a late fire never paints
+        // the wrong levels onto someone else's rubric.
+        _trackTimer(() => {
+          const nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
+            'select#change-user-select, select[data-action="change-user"]'
+          ))?.value?.trim() || '';
+          if (nowUid && nowUid !== student.uid) return;
+          applyResultToLiveDom(rubric, editedResult, { cosmetic: true, immediate: true });
+        }, 2000);
 
         // Show Done / Stay / Move row after successful post
         const resultRow = /** @type {HTMLElement|null} */(document.getElementById(`mag-result-row-${student.uid}`));
@@ -4304,14 +4358,12 @@ ${checkInstructions}`;
           document.addEventListener('keydown', keyHandler);
           doneBtn.onclick = dismiss;
 
-          // applyResultToLiveDom's rubric-cell clicks (above) can themselves have already
-          // triggered Moodle's own auto-advance-after-rubric-completion — the same behavior
-          // the auto-post path above guards against with this exact check before clicking
-          // saveandshownext. If that already happened, the live DOM now belongs to a
-          // DIFFERENT, unrelated student; blindly clicking Stay/Move's buttons would save a
-          // blank form over them and, for Move, cascade into yet another unwanted
-          // navigation — which the navWatcher then keeps processing, showing up as
-          // continuous flickering on every single post rather than an occasional race.
+          // The grade is already saved by postGrade's web-service call, and the cosmetic
+          // live-DOM pass above dirtied nothing. So Stay/Move are pure UI/navigation now —
+          // they must NOT click Moodle's savechanges / saveandshownext form buttons, which
+          // re-submit the grading form and run _handleFormSubmissionResponse (the
+          // getFormFromChild(undefined).closest crash → nav storm). If Moodle's own
+          // auto-advance already moved the page on, navWatcher handles the new student.
           const stillOnThisStudent = () => {
             const nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
               'select#change-user-select, select[data-action="change-user"]'
@@ -4319,84 +4371,26 @@ ${checkInstructions}`;
             return !nowUid || nowUid === student.uid;
           };
 
-          if (stayBtn) stayBtn.onclick = async () => {
+          if (stayBtn) stayBtn.onclick = () => {
             cancelTimer();
-            if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
-            // Let applyResultToLiveDom's pending write passes actually finish before this
-            // click reaches Moodle — see moveBtn's onclick below for why.
-            const wait = applyPassesSettleBy - Date.now();
-            if (wait > 0) await sleep(wait);
-            if (!stillOnThisStudent()) return;
-            // Click Moodle's own "Save changes" button — re-submits the live form (which
-            // applyResultToLiveDom already filled), clears the "dirty" flag, and stays on
-            // this student without navigation. Same logic as Save & Move / saveandshownext.
-            const saveChangesBtn = /** @type {HTMLElement|null} */(document.querySelector(
-              'button[name="savechanges"]'
-            ));
-            if (saveChangesBtn) saveChangesBtn.click();
-            // Transform Done into a plain close button (timer is gone)
+            // Grade already saved; "Stay" just means keep this student on screen. Nothing to
+            // submit — belt-and-braces clear the dirty flag and turn Done into a close button.
+            clearMoodleFormDirty();
             if (doneBtn) { doneBtn.textContent = 'Done ✓'; doneBtn.onclick = () => reviewOverlay.classList.remove('open'); }
           };
 
-          if (moveBtn) moveBtn.onclick = async () => {
+          if (moveBtn) moveBtn.onclick = () => {
             cancelTimer();
             if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
-
-            // Console evidence (v2.5.72) showed Moodle's OWN GradingPanel code throwing an
-            // uncaught exception in its post-save dirty-flag cleanup (getFormFromChild
-            // reading .closest on undefined), immediately followed by the navigation storm —
-            // this looks like a genuine bug in Moodle's grading panel JS, exposed by
-            // navigating while our own feedback/remark writes (applyResultToLiveDom Phase 2,
-            // staggered up to 1500ms out) are still in flight. Let those actually finish —
-            // not cancel them — before this click reaches Moodle, so its internal state has
-            // settled by the time it processes a save+navigate.
-            const wait = applyPassesSettleBy - Date.now();
-            if (wait > 0) await sleep(wait);
-            if (!stillOnThisStudent()) return; // re-check: Moodle may have moved on during the wait
-
-            // NOW cancel the pending 2-second full-reapply retry (scheduled when the grade
-            // was first posted, above) — this one we do want stopped before navigating away,
-            // unlike the passes just waited for above.
-            _cancelLiveTimers();
-
-            // Try clearing Moodle core's own "unsaved changes" dirty flag (documented API:
-            // M.core_formchangechecker.reset_form_dirty_state) and using the plain next-user
-            // navigation, instead of the compound "save and show next" button below. postGrade
-            // already saved everything via AJAX, so the reset is accurate, not a lie — and it
-            // avoids the one remaining synthetic click in this flow that removing rubric-cell
-            // clicking (v2.5.70, reverted) didn't fix, so is worth ruling in or out on its own.
-            // Only try this when the API is actually present: without it, a plain next-user
-            // click could trigger a real "unsaved changes?" confirm() dialog a script can't
-            // dismiss, hanging the flow — worse than the flicker this is meant to fix.
-            const formChangeChecker = /** @type {any} */(window).M?.core_formchangechecker;
-            if (!formChangeChecker?.reset_form_dirty_state) {
-              console.log('[MAG] Move: M.core_formchangechecker.reset_form_dirty_state not available on this page — using saveandshownext fallback.');
-            } else {
-              try { formChangeChecker.reset_form_dirty_state(); } catch {}
-              const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
-                '[data-action="next-user"], [data-action="nextuser"]'
-              ));
-              if (nextUser) { console.log('[MAG] Move: dirty flag reset, navigating via plain next-user.'); nextUser.click(); return; }
-            }
-
-            // Fallback (formchangechecker unavailable, or its next-user element missing):
-            // Moodle's own "Save and show next" button submits the grading form and navigates
-            // in one step, clearing the "dirty" flag set by applyResultToLiveDom itself and
-            // bypassing the unsaved-changes confirmation dialog.
-            const saveAndNext = /** @type {HTMLElement|null} */(document.querySelector(
-              'button[name="saveandshownext"], input[name="saveandshownext"], ' +
-              '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
-              'button[name="saveandnext"], input[name="saveandnext"]'
+            _cancelLiveTimers(); // stop the 2 s cosmetic re-apply before we leave this student
+            // Grade is saved. Clear Moodle's dirty flag (truthfully — nothing unsaved) then
+            // navigate with the plain user switcher, which does NOT submit the form.
+            clearMoodleFormDirty();
+            const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
+              '[data-action="next-user"], [data-action="nextuser"]'
             ));
-            if (saveAndNext) {
-              saveAndNext.click();
-            } else {
-              // Last resort: plain next-user click (may still trigger Moodle's dialog)
-              const mNext = /** @type {HTMLElement|null} */(document.querySelector(
-                '[data-action="next-user"], [data-action="nextuser"]'
-              ));
-              if (mNext) mNext.click();
-            }
+            if (nextUser) { nextUser.click(); return; }
+            document.getElementById('mag-next-btn')?.click();
           };
         }
       } catch (err) {
