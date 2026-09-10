@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.26
+// @version      2.6.27
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -11,7 +11,6 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
-// @grant        unsafeWindow
 // @connect      *
 // @connect      generativelanguage.googleapis.com
 // @connect      api.anthropic.com
@@ -24,13 +23,6 @@
 
 (function () {
   'use strict';
-
-  // The REAL page window. MAG runs in Tampermonkey's sandbox (any @grant switches it on),
-  // where Moodle's page-context globals — `require` (RequireJS/AMD loader), `M` (Moodle's
-  // config + YUI namespace), `tinymce` — are NOT visible as `window.*`. Reach them through
-  // unsafeWindow. DOM (`document`) and @require'd libs (fflate, XLSX, pdfjsLib) stay on the
-  // sandbox `window` and must NOT go through here.
-  const PW = /** @type {any} */(typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
 
   // ── API endpoints ────────────────────────────────────────────────────────
   const GEMINI_ENDPOINT      = /** @param {string} k @param {string} m */ (k, m) =>
@@ -102,7 +94,7 @@
   let _cachedAssignDbId  = /** @type {string|null} */ (null);
 
   function getSesskey() {
-    const live = PW.M?.cfg?.sesskey
+    const live = /** @type {any} */(window).M?.cfg?.sesskey
         || document.querySelector('input[name=sesskey]')?.value || '';
     if (live) _cachedSesskey = live;
     return live || _cachedSesskey;
@@ -128,83 +120,14 @@
   };
   const _cancelLiveTimers = () => { _liveTimers.forEach(clearTimeout); _liveTimers.clear(); };
 
-  // Cached reference to core_form/changechecker. RequireJS's synchronous `require('name')`
-  // only works for a module already resolved via a callback require somewhere — so grab it
-  // once, up front, and keep the reference. Then clearMoodleFormDirty needs no require() at
-  // call time and is guaranteed synchronous.
-  let _magChangeChecker = /** @type {any} */(null);
-  (function preloadChangeChecker() {
-    const req = PW.require;
-    if (typeof req !== 'function') { console.warn('[MAG] PW.require not a function at init — retrying on first use'); return; }
-    try {
-      req(['core_form/changechecker'], (/** @type {any} */ m) => {
-        _magChangeChecker = m;
-        console.log('[MAG] core_form/changechecker preloaded — methods:', m && Object.keys(m));
-      }, () => console.warn('[MAG] core_form/changechecker failed to preload'));
-    } catch (e) { console.warn('[MAG] preloadChangeChecker threw:', e); }
-  })();
-
-  // Tell Moodle its grading form has no unsaved changes. The grade — rubric, remarks and
-  // feedback — is already saved by postGrade's web-service call, and the live DOM now shows
-  // that same state, so this is truthful, not a lie. Without it, navigating to another
-  // student triggers Moodle's "Unsaved changes" dialog, which sits UNDER the MAG panel and
-  // silently blocks navigation.
-  //
-  // Levers, most-surgical first — resetFormDirtyState (re-snapshot as clean baseline),
-  // markFormSubmitted (flag as saved), disableAllChecks (turn the guard off for the page
-  // session — MAG owns saving + navigation here so the guard only obstructs). All logged so
-  // a failing build shows which lever was actually available.
-  function clearMoodleFormDirty() {
-    const log = /** @type {string[]} */([]);
-
-    // Legacy YUI checker (older builds).
-    try {
-      const y = PW.M?.core_formchangechecker;
-      if (y?.reset_form_dirty_state) { y.reset_form_dirty_state(); log.push('M.ccc.reset'); }
-      if (y?.set_form_submitted)     { y.set_form_submitted();     log.push('M.ccc.submitted'); }
-    } catch (e) { log.push('M.ccc threw: ' + /** @type {any} */(e).message); }
-
-    let cc = _magChangeChecker;
-    if (!cc && typeof PW.require === 'function') {
-      try { cc = PW.require('core_form/changechecker'); if (cc) { _magChangeChecker = cc; } }
-      catch (e) { log.push('sync require threw: ' + /** @type {any} */(e).message); }
-      if (!cc) { try { PW.require(['core_form/changechecker'], (/** @type {any} */ m) => { _magChangeChecker = m; }); } catch {} }
-    }
-    if (cc) {
-      // The "All" variants hit EVERY form the checker is watching — no need to identify
-      // which form mod_assign's grading panel registered (form.id is unreliable anyway:
-      // DOM-clobbered by <input name="id"> in Moodle forms). Then per-form for good measure,
-      // then the global off switch.
-      try { cc.resetAllFormDirtyStates?.(); log.push('resetAll'); } catch (e) { log.push('resetAll threw: ' + /** @type {any} */(e).message); }
-      try { cc.markAllFormsSubmitted?.();   log.push('submittedAll'); } catch (e) { log.push('submittedAll threw: ' + /** @type {any} */(e).message); }
-      for (const f of /** @type {HTMLFormElement[]} */([...document.querySelectorAll('form')])) {
-        try { cc.resetFormDirtyState?.(f); cc.markFormSubmitted?.(f); } catch {}
-      }
-      try { cc.disableAllChecks?.(); log.push('disableAll'); } catch (e) { log.push('disableAll threw: ' + /** @type {any} */(e).message); }
-      try { log.push('anyDirty=' + cc.isAnyWatchedFormDirty?.()); } catch {}
-    } else {
-      log.push('changechecker module unavailable');
-    }
-    console.log('[MAG] clearMoodleFormDirty →', log.join(' | '));
-  }
-
-  // After saving a grade the AMD grader still shows the old (unselected) rubric because the
-  // SPA cached its state before we posted. We fix this by directly updating the live DOM.
-  //
-  // opts.cosmetic: the grade is ALREADY saved authoritatively (postGrade web-service call),
-  // so this pass makes the visible form MATCH that saved state without provoking Moodle's
-  // AMD machinery: it sets rubric-cell classes and writes remark/feedback .value DIRECTLY,
-  // firing NO .click() and NO input/change events, and touches no hidden inputs. Synthetic
-  // clicks are what drove Moodle's own click handler / auto-advance /
-  // _handleFormSubmissionResponse cleanup — the getFormFromChild(undefined).closest crash
-  // that turned every post-and-navigate into a flicker storm. The .value writes still
-  // register with Moodle's change-checker as "unsaved", so cosmetic mode ends by calling
-  // clearMoodleFormDirty() to re-baseline it (the page shows the full graded state; Moodle
-  // just needs telling it's saved, which it is).
-  async function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean, cosmetic?: boolean}} */ opts = {}) {
+  // After saving a grade via form POST the AMD grader still shows the old (unselected) rubric
+  // because the SPA cached its state before we posted. We fix this by directly updating the
+  // live DOM: find each rubric level cell by its ID suffix, clear siblings, mark it checked,
+  // and fire a click so Moodle's own cell-click handler (if present) can also run.
+  // Also update the Atto feedback editor div and its backing textarea.
+  async function applyResultToLiveDom(/** @type {any[]} */ rubric, /** @type {any} */ result, /** @type {{immediate?: boolean}} */ opts = {}) {
     // immediate: true → skip all setTimeout retries (safe to call just before navigation)
     const skipDelays = !!opts.immediate;
-    const cosmetic   = !!opts.cosmetic;
     // Self-contained (this function has no student/uid parameter): captured so Phase 2 can
     // detect if Moodle silently navigated away mid-Phase-1 (see the inter-click await below)
     // and skip writing remarks to what would now be a different student's textareas.
@@ -245,47 +168,38 @@
       // toggle-off logic when we click a cell that already has 'checked'.
       const alreadySelected = cell.classList.contains('checked')
                            || cell.getAttribute('aria-checked') === 'true';
-      const clearSiblings = () => {
-        if (!row) return;
-        for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
-          if (sib !== cell) {
-            sib.classList.remove('checked', 'selected', 'currentlevel');
-            sib.removeAttribute('aria-checked');
+      if (!alreadySelected) {
+        // Clear sibling cells first (excluding target so the click fires on uncheckd state).
+        if (row) {
+          for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+            if (sib !== cell) {
+              sib.classList.remove('checked', 'selected', 'currentlevel');
+              sib.removeAttribute('aria-checked');
+            }
           }
         }
-      };
-      if (!alreadySelected) {
-        clearSiblings();
-        if (cosmetic) {
-          // No synthetic click — that's what drives Moodle's dirty flag / auto-advance /
-          // buggy post-submit cleanup. Just set the visual state; the grade itself is
-          // already saved server-side by postGrade.
+        try { cell.click(); } catch {}
+        // Manual fallback: if Moodle's handler didn't add 'checked' (no click handler on this build)
+        if (!cell.classList.contains('checked') && cell.getAttribute('aria-checked') !== 'true') {
+          if (row) {
+            for (const sib of /** @type {NodeListOf<HTMLElement>} */(row.querySelectorAll('td.level, [data-levelid]'))) {
+              sib.classList.remove('checked', 'selected', 'currentlevel');
+              sib.removeAttribute('aria-checked');
+            }
+          }
           cell.classList.add('checked');
           cell.setAttribute('aria-checked', 'true');
-        } else {
-          try { cell.click(); } catch {}
-          // Manual fallback: if Moodle's handler didn't add 'checked' (no click handler on this build)
-          if (!cell.classList.contains('checked') && cell.getAttribute('aria-checked') !== 'true') {
-            clearSiblings();
-            cell.classList.add('checked');
-            cell.setAttribute('aria-checked', 'true');
-          }
-          // Let Moodle's own click handler (and any debounced completion-check it
-          // schedules) settle before the next cell's click fires — see the note above.
-          await sleep(60);
         }
+        // Let Moodle's own click handler (and any debounced completion-check it
+        // schedules) settle before the next cell's click fires — see the note above.
+        await sleep(60);
       }
 
       const cid = criterion?.criterionId
-               || (cell.id.match(/(?:^rubric|^advancedgrading)-criteria-(\d+)-levels-/) || [])[1]
+               || (cell.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1]
                || /** @type {any} */(cell).dataset?.criterionid
                || null;
-      // Set the hidden levelid input — but NOT in cosmetic mode. Changing a form field's
-      // value is what Moodle's grading panel snapshots as "unsaved changes", which then
-      // forces its dialog and blocks in-page navigation. The grade is already saved on the
-      // server via postGrade's web-service call, so cosmetic mode only needs the visual
-      // highlight (the CSS class set above — not a form field, so it doesn't dirty anything).
-      if (cid && !cosmetic) {
+      if (cid) {
         const inp = /** @type {HTMLInputElement|null} */(
           document.querySelector(`input[name="advancedgrading[criteria][${cid}][levelid]"]`)
         );
@@ -307,13 +221,6 @@
         return;
       }
     }
-
-    // Cosmetic mode stops here. Phase 2 writes into remark textareas and the feedback
-    // editor — form fields whose changed values Moodle's grading panel reads as "unsaved
-    // changes", which then blocks clean in-page navigation. Everything Phase 2 would write
-    // is already saved on the server by postGrade; the rubric highlight (CSS classes, done
-    // in Phase 1) is all cosmetic mode needs. Re-baseline the change-checker and return.
-    if (cosmetic) { clearMoodleFormDirty(); return; }
 
     // ── Phase 2: write justifications to remark textareas ────────────────────
     // Runs immediately AND again after 700 ms (in case AMD reveals textareas
@@ -362,10 +269,8 @@
 
         if (ta) {
           ta.value = score.justification;
-          if (!cosmetic) {
-            ta.dispatchEvent(new Event('input',  { bubbles: true }));
-            ta.dispatchEvent(new Event('change', { bubbles: true }));
-          }
+          ta.dispatchEvent(new Event('input',  { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
           console.log('[MAG] Wrote remark for criterion', cid ?? score.criterionIndex);
         } else {
           console.warn('[MAG] Remark textarea not found for criterion', cid ?? score.criterionIndex,
@@ -414,15 +319,12 @@
         // TinyMCE 6 exposes itself on window.tinymce even through Moodle's AMD loader.
         const ta   = getFeedbackTA();
         const edId = ta?.id || 'id_assignfeedbackcomments_editor';
-        const tiny = PW.tinymce || PW.tinyMCE;
+        const tiny = /** @type {any} */(window).tinymce || /** @type {any} */(window).tinyMCE;
         const ed   = tiny?.get(edId) || (tiny?.editors?.length && tiny.editors[0]);
         if (ed && typeof ed.setContent === 'function') {
           ed.setContent(feedbackHtml);
           ed.save?.(); // sync content back to textarea
           if (ta) ta.value = feedback;
-          // setContent flags the editor dirty; in cosmetic mode it's already saved, and
-          // clearMoodleFormDirty at the end re-baselines the form checker anyway.
-          if (cosmetic) { try { ed.setDirty?.(false); } catch {} }
           console.log('[MAG] Feedback set via TinyMCE API', edId);
           return;
         }
@@ -438,10 +340,8 @@
         // Strategy C: Atto / plain textarea (no iframe)
         if (ta) {
           ta.value = feedback;
-          if (!cosmetic) {
-            ta.dispatchEvent(new Event('input',  { bubbles: true }));
-            ta.dispatchEvent(new Event('change', { bubbles: true }));
-          }
+          ta.dispatchEvent(new Event('input',  { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
           console.log('[MAG] Feedback written to plain textarea');
         }
       };
@@ -450,11 +350,6 @@
       if (!skipDelays) _trackTimer(applyFeedbackLive, 400);  // pass 2: after iframe loads
       if (!skipDelays) _trackTimer(applyFeedbackLive, 1500); // pass 3: retry in case Moodle re-rendered
     }
-
-    // All visible writes done — tell Moodle's change-checker the form is clean (it is: the
-    // grade is saved and the page now shows that state). Synchronous, so it lands before
-    // any navigation click that follows this call.
-    if (cosmetic) clearMoodleFormDirty();
   }
 
   // Call Moodle's internal AJAX service at /lib/ajax/service.php.
@@ -1114,10 +1009,10 @@
       // Willis rubric has no separate description text under the criterion name
       const desc = '';
 
-      // Criterion ID from tr id: "rubric-criteria-{criterionId}" (older markup) or
-      // "advancedgrading-criteria-{criterionId}" (Moodle 4.x AMD grader). Moodle 4 often
-      // omits the id on tr.criterion — fall back to the first td.level id below.
-      let criterionId = (row.id.match(/(?:rubric|advancedgrading)-criteria-(\d+)$/) || [])[1] || null;
+      // Criterion ID from tr id: "rubric-criteria-{criterionId}".
+      // Moodle 4 grader omits the id on tr.criterion — fall back to extracting it
+      // from the first td.level id: "rubric-criteria-{cid}-levels-{lid}".
+      let criterionId = (row.id.match(/rubric-criteria-(\d+)$/) || [])[1] || null;
 
       const levels = [];
       const levelEls = row.querySelectorAll('td.level');
@@ -1126,7 +1021,7 @@
         const levelId = (lvl.id.match(/-levels-(\d+)$/) || [])[1] || null;
         // Opportunistically extract criterionId from level cell id when tr has no id
         if (!criterionId && lvl.id) {
-          criterionId = (lvl.id.match(/^(?:rubric|advancedgrading)-criteria-(\d+)-levels-/) || [])[1] || null;
+          criterionId = (lvl.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1] || null;
         }
         // Score: span.scorevalue (confirmed); fall back to div.score textContent
         const scoreEl = lvl.querySelector('.scorevalue') || lvl.querySelector('.score');
@@ -2608,63 +2503,39 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     //    Only fall back to fetching the static ?action=grade page if the live form is absent
     //    or belongs to a different student.
     let /** @type {HTMLFormElement|null} */ form = null;
-    const liveForm = /** @type {HTMLFormElement|null} */(document.querySelector(
-      'form#mform1, [data-region="grade-panel"] form, [data-region="grade"] form, form.gradeform'
-    ));
+    const liveForm = /** @type {HTMLFormElement|null} */(document.querySelector('form#mform1'));
     const liveUid  = /** @type {HTMLInputElement|null} */(liveForm?.querySelector('input[name=userid]'))?.value;
     if (liveForm && (!liveUid || liveUid === student.uid)) {
       form = liveForm;
-      console.log('[MAG] postGrade: using LIVE DOM form (' + (liveForm.id || liveForm.className || '?') + ') | userid:', liveUid || '(none)');
+      console.log('[MAG] Using live DOM form | userid in form:', liveUid || '(not found)');
     } else {
-      console.log('[MAG] postGrade: no usable live form (liveForm=' + !!liveForm + ', liveUid=' + liveUid + ', want=' + student.uid + ') — fetching static grade page');
+      if (liveForm) console.log('[MAG] Live form userid', liveUid, '≠', student.uid, '— fetching static page');
       const pageResp = await xhr('GET', student.gradeLink);
       const formDoc  = new DOMParser().parseFromString(pageResp.responseText, 'text/html');
       form = /** @type {HTMLFormElement|null} */(
         formDoc.querySelector('form#mform1') || formDoc.querySelector('form[action*="assign"]')
       );
-      console.log('[MAG] postGrade: static grade page HTTP', pageResp.status, '| form found:', !!form);
+      console.log('[MAG] Static grade page HTTP', pageResp.status, '| form found:', !!form);
     }
     if (!form) throw new Error('Grade form (form#mform1) not found.');
 
-    // Whichever form we ended up with, the SESSION-scoped fields must reflect THIS page's
-    // live session — a fetched static page can carry a stale _qf__ token or advanced-grading
-    // instance id, which is a prime suspect for the web service's "Invalid parameter" and
-    // for the rubric silently not persisting. Pull the live values when the page has them.
-    /** @type {(name:string)=>string|null} */
-    const liveVal = (name) => {
-      const el = /** @type {HTMLInputElement|null} */(document.querySelector(`input[name="${name}"]`));
-      return el ? el.value : null;
-    };
-    const liveAgInstance = liveVal('advancedgradinginstanceid');
-    const liveQfToken     = [...document.querySelectorAll('input[name^="_qf__"]')].map(e => /** @type {HTMLInputElement} */(e).name)[0] || null;
-    console.log('[MAG] postGrade: live session fields — advancedgradinginstanceid:', liveAgInstance, '| _qf__ token:', liveQfToken);
-
-    // 2. Copy form inputs into FormData. Only submit/button/reset/image are skipped
-    //    (a browser submits just the clicked one). The advancedgrading[criteria][N][] blank
-    //    placeholders ARE kept — Moodle's own save sends them and its advanced-grading form
-    //    element expects them back to rebuild the criteria array; dropping them was why the
-    //    rubric silently didn't persist (confirmed by diffing a real manual save).
+    // 2. Copy form inputs into FormData.
+    //    Exclusions:
+    //    • submit/button/reset/image — browser submits only the clicked one; include none
+    //    • advancedgrading[criteria][N][] blank placeholders — PHP parse_str merges these with
+    //      our [levelid] entry into a mixed numeric/string-key array; Moodle rejects that
     const fd = new FormData();
     for (const el of /** @type {HTMLInputElement[]} */([...form.querySelectorAll('input, select, textarea')])) {
       if (!el.name) continue;
       if (el.type === 'submit' || el.type === 'button' || el.type === 'reset' || el.type === 'image') continue;
+      if (/^advancedgrading\[criteria\]\[\d+\]\[\]$/.test(el.name)) continue;
       if (el.type === 'radio' || el.type === 'checkbox') {
         if (el.checked) fd.append(el.name, el.value);
       } else {
         fd.append(el.name, el.value);
       }
     }
-    // Guarantee the blank per-criterion placeholder exists for every rubric criterion even
-    // if the fetched form didn't render it.
-    for (const criterion of rubric || []) {
-      const cid = /** @type {any} */(criterion).criterionId;
-      if (cid && ![...fd.keys()].includes(`advancedgrading[criteria][${cid}][]`)) {
-        fd.append(`advancedgrading[criteria][${cid}][]`, '');
-      }
-    }
     fd.set('sesskey', sesskey);
-    if (!fd.has('action')) fd.set('action', 'submitgrade');
-    fd.set('ajax', '0');
 
     // 3. Build criterion prefix map from the form's own radio/hidden inputs.
     //    Keeps an ordered array for index-based fallback (when criterionId is null).
@@ -2719,35 +2590,21 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       fd.set('assignfeedbackcomments_editor[format]', '1');
     }
 
-    // 5b. Session fields: keep the fetched form's advancedgradinginstanceid (it pairs with
-    // the ?action=grade endpoint we POST to). A real manual save sends NO remarkformat and
-    // NO ajax=1 — matched above.
-    fd.set('sesskey', getSesskey());
-
     const bodyStr = fdToBody(fd);
     setStatus(`Posting grade for ${student.name}…`, '#c9a0ff');
 
-    // ── DIAGNOSTIC: what advanced-grading / session fields are we actually sending?
-    console.log('[MAG] postGrade args:', { assignmentid: parseInt(assignDbId), userid: parseInt(student.uid), assignDbIdRaw: assignDbId });
-    console.log('[MAG] postGrade advancedgrading fields:',
-      [...fd.entries()].filter(([k]) => /advancedgrading|sesskey|_qf__|gradingmethod|attemptnumber/i.test(k))
-        .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`));
-
-    // 6. Web service — the same call Moodle's own AMD grader makes. A captured real call
-    //    passes ONLY assignmentid + userid + jsonformdata (attemptnumber lives inside the
-    //    form data, NOT as a top-level arg); sending it as an arg is an unexpected key and
-    //    was the "Invalid parameter" rejection. jsonformdata is JSON.stringify of the
-    //    urlencoded string.
+    // 6. Try the web service first (works on some Moodle installs).
+    //    Moodle 4.x AMD passes jsonformdata as JSON.stringify(urlEncodedString).
     try {
       await moodleAjax('mod_assign_submit_grading_form', {
-        assignmentid: assignDbId,
-        userid:       parseInt(student.uid),
-        jsonformdata: JSON.stringify(bodyStr),
+        assignmentid:  parseInt(assignDbId),
+        userid:        parseInt(student.uid),
+        attemptnumber: -1,
+        jsonformdata:  JSON.stringify(bodyStr),
       });
-      console.log('[MAG] postGrade: web service accepted');
       return true;
-    } catch (wsErr) {
-      console.warn('[MAG] postGrade: web service rejected —', /** @type {any} */(wsErr).message);
+    } catch {
+      // Web service not available on this Moodle — form POST fallback below
     }
 
     // 7. Fallback: traditional form POST (view.php?action=submitgrade in body).
@@ -2761,58 +2618,7 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     const respDoc = new DOMParser().parseFromString(postR.responseText, 'text/html');
     const errEl   = respDoc.querySelector('.errorbox, .alert-danger, .alert-error, .moodle-exception-message');
     if (errEl) throw new Error(errEl.textContent.trim().slice(0, 200));
-    // Advanced-grading validation errors render inline (not in an errorbox) and Moodle
-    // just re-shows the form instead of redirecting. If the response still contains the
-    // grading form, the save did NOT go through.
-    if (respDoc.querySelector('form#mform1 [name^="advancedgrading"]') && !/action=grading/.test(postR.finalUrl || '')) {
-      const inlineErr = respDoc.querySelector('.error, [id$="error"], .felement .text-danger');
-      console.warn('[MAG] form POST re-rendered the grading form (save likely failed). Inline error:', inlineErr?.textContent?.trim()?.slice(0, 160) || '(none found)');
-    }
     if (postR.status >= 400) throw new Error(`Grade POST failed: HTTP ${postR.status}`);
-
-    // STRICT verify: re-fetch this student's grade page and confirm the EXACT levelids MAG
-    // set are the ones now selected server-side. A loose "any level looks checked" test
-    // gives false positives from stale grades.
-    if ((rubric || []).length && rubricFieldsSet > 0) {
-      try {
-        const wantLevelIds = new Set(
-          (result.scores || []).map(/** @param {any} s */ s => {
-            const c = rubric[s.criterionIndex];
-            return c && matchRubricLevel(c, s.pointsAwarded)?.id;
-          }).filter(Boolean).map(String)
-        );
-        const check = await xhr('GET', student.gradeLink);
-        const cdoc  = new DOMParser().parseFromString(check.responseText, 'text/html');
-        const serverLevelIds = new Set(/** @type {string[]} */([
-          ...[...cdoc.querySelectorAll('input[name*="[criteria]"][name*="[levelid]"]:checked')]
-            .map(el => /** @type {HTMLInputElement} */(el).value?.trim()),
-          // Any element whose id ends -levels-N and whose class marks it as the current pick
-          ...[...cdoc.querySelectorAll('[id*="-levels-"]')]
-            .filter(el => /\b(checked|currentchecked|selected)\b/.test(el.className))
-            .map(el => (el.id.match(/-levels-(\d+)$/) || [])[1]),
-          ...[...cdoc.querySelectorAll('input[type="hidden"][name*="[criteria]"][name$="[levelid]"]')]
-            .map(el => /** @type {HTMLInputElement} */(el).value?.trim()),
-        ].filter(v => v && v !== '0')));
-        const matched = [...wantLevelIds].filter(id => serverLevelIds.has(id));
-        console.log('[MAG] postGrade verify: wanted', [...wantLevelIds], '| server has', [...serverLevelIds], '| matched', matched.length + '/' + wantLevelIds.size);
-        if (wantLevelIds.size && matched.length === 0) {
-          // Dump the rubric region of BOTH the POST response and the re-fetch so we can see
-          // what Moodle actually did with the submission.
-          const rubricHtml = (postR.responseText.match(/advancedgrading[\s\S]{0,400}/) || ['(not in POST response)'])[0].replace(/\s+/g, ' ');
-          console.warn('[MAG] verify FAIL — POST response rubric region:', rubricHtml.slice(0, 400));
-          const cErr = [...cdoc.querySelectorAll('.error, .text-danger, .alert')].map(e => e.textContent?.trim()).filter(Boolean).slice(0, 5);
-          console.warn('[MAG] verify FAIL — re-fetch page errors/alerts:', cErr);
-          throw new Error('Rubric did NOT persist server-side — none of the selected levels are saved. (Feedback may have saved.) Do not navigate away; grade this student manually.');
-        }
-        if (matched.length < wantLevelIds.size) {
-          console.warn('[MAG] postGrade verify: only', matched.length, 'of', wantLevelIds.size, 'levels persisted — partial save');
-        }
-        console.log('[MAG] postGrade: rubric persistence verified (' + matched.length + '/' + wantLevelIds.size + ')');
-      } catch (e) {
-        if (/did NOT persist/.test(/** @type {any} */(e).message)) throw e;
-        console.warn('[MAG] postGrade: could not verify rubric save:', /** @type {any} */(e).message);
-      }
-    }
     return true;
   }
 
@@ -4364,7 +4170,6 @@ ${checkInstructions}`;
       // Animate fill to ~80% immediately (fake progress — snaps fast, slows near end)
       if (progFill) requestAnimationFrame(() => { if (progFill) progFill.style.width = '80%'; });
 
-      let isAutoPost = false; // hoisted so the catch block can read it
       try {
         // Collect edited scores from selects
         const scoreSelects = document.querySelectorAll(`select[data-uid="${student.uid}"]`);
@@ -4402,7 +4207,7 @@ ${checkInstructions}`;
         // what Grade One does when the user clicks "Save & Move".
         // immediate=true skips setTimeout retries that would corrupt the next student's
         // form once Moodle navigates away.
-        isAutoPost = autoGradeThisPost;
+        const isAutoPost = autoGradeThisPost;
         autoGradeThisPost = false;
         if (isAutoPost) {
           // Awaited (not fire-and-forget) — applyResultToLiveDom now pauses briefly between
@@ -4443,8 +4248,7 @@ ${checkInstructions}`;
           return;
         }
 
-        // Grade One path (manual confirmation): the grade is now saved authoritatively by
-        // postGrade's web-service call. Everything below is presentation only.
+        // Grade One path (manual confirmation): use AJAX post + AMD live-DOM update.
         await postGrade(student, rubric, editedResult, assignmentId);
 
         // Complete the bar
@@ -4454,23 +4258,14 @@ ${checkInstructions}`;
         document.getElementById(`mag-status-${student.uid}`).className   = 'mag-card-status done';
         document.getElementById(`mag-card-${student.uid}`).style.opacity = '0.7';
 
-        // Cosmetic-only live-DOM sync: no synthetic clicks or input/change events, so it
-        // can't dirty Moodle's form, drive its rubric handler / auto-advance, or set up the
-        // getFormFromChild(undefined) crash in _handleFormSubmissionResponse — the thing
-        // that turned every post-and-navigate into a flicker storm. The grade is already
-        // saved; this just makes the panel look right.
-        applyResultToLiveDom(rubric, editedResult, { cosmetic: true, immediate: true });
-        // Re-apply once after 2 s (still cosmetic) in case Moodle's AMD re-rendered the
-        // panel from its internal model and wiped our classes. Tracked so navigation cancels
-        // it — and it double-checks we're still on this student, so a late fire never paints
-        // the wrong levels onto someone else's rubric.
-        _trackTimer(() => {
-          const nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
-            'select#change-user-select, select[data-action="change-user"]'
-          ))?.value?.trim() || '';
-          if (nowUid && nowUid !== student.uid) return;
-          applyResultToLiveDom(rubric, editedResult, { cosmetic: true, immediate: true });
-        }, 2000);
+        applyResultToLiveDom(rubric, editedResult);
+        // Re-apply after 2 s in case Moodle's AMD re-rendered the panel.
+        // Tracked so navigation can cancel it before it fires on the next student's page.
+        _trackTimer(() => applyResultToLiveDom(rubric, editedResult), 2000);
+        // applyResultToLiveDom's Phase 2 (remarks/feedback) schedules its own staggered
+        // retries up to 1500ms out. Stay/Move below wait until this point before letting
+        // Moodle process a save+navigate — see the comment on that wait for why.
+        const applyPassesSettleBy = Date.now() + 1500;
 
         // Show Done / Stay / Move row after successful post
         const resultRow = /** @type {HTMLElement|null} */(document.getElementById(`mag-result-row-${student.uid}`));
@@ -4509,144 +4304,99 @@ ${checkInstructions}`;
           document.addEventListener('keydown', keyHandler);
           doneBtn.onclick = dismiss;
 
-          // The grade is already saved by postGrade (via its form-POST fallback — Moodle's
-          // own mod_assign_submit_grading_form web service rejects this rubric's field
-          // shape with "Invalid parameter", which also breaks Moodle's own "Save &
-          // continue"). So Move does NOT go through any Moodle form save: it reads the next
-          // student's uid and hard-navigates there. Grade's already persisted; nothing lost.
-          const graderSelect = () => /** @type {HTMLSelectElement|null} */(document.querySelector(
-            'select#change-user-select, select[data-action="change-user"]'
-          ));
-          // The <select> often has no options on the AMD grader; the current user id lives in
-          // its data-currentuserid attribute, and data-selected is the pending next user.
-          const currentGraderUid = () => {
-            const s = graderSelect();
-            return (s?.value?.trim()) || s?.getAttribute('data-currentuserid') || '';
+          // applyResultToLiveDom's rubric-cell clicks (above) can themselves have already
+          // triggered Moodle's own auto-advance-after-rubric-completion — the same behavior
+          // the auto-post path above guards against with this exact check before clicking
+          // saveandshownext. If that already happened, the live DOM now belongs to a
+          // DIFFERENT, unrelated student; blindly clicking Stay/Move's buttons would save a
+          // blank form over them and, for Move, cascade into yet another unwanted
+          // navigation — which the navWatcher then keeps processing, showing up as
+          // continuous flickering on every single post rather than an occasional race.
+          const stillOnThisStudent = () => {
+            const nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
+              'select#change-user-select, select[data-action="change-user"]'
+            ))?.value?.trim() || '';
+            return !nowUid || nowUid === student.uid;
           };
 
-          // Full page load to a specific student on the AMD grader. Grade is already saved.
-          // Use the REAL page location (unsafeWindow) — the sandbox's `location` proxy does
-          // not actually navigate, same lesson as require/M/tinymce. Try several triggers.
-          const hardNavTo = (/** @type {string} */ uid) => {
-            const loc = PW.location || location;
-            const target = `${loc.origin}/mod/assign/view.php?id=${assignId}&userid=${uid}&action=grader`;
-            console.warn('[MAG] Move: navigating to', target);
-            try { loc.assign(target); } catch (e) { console.warn('[MAG] loc.assign threw:', /** @type {any} */(e).message); }
-            try { loc.href = target; }   catch (e) { console.warn('[MAG] loc.href set threw:', /** @type {any} */(e).message); }
-            try { PW.open?.(target, '_self'); } catch {}
-            setTimeout(() => {
-              try {
-                if (((PW.location || location).href || '').indexOf('userid=' + uid) === -1) {
-                  console.warn('[MAG] Move: navigation did NOT take. Still at', (PW.location || location).href);
-                }
-              } catch {}
-            }, 900);
-          };
-
-          // The uid to move to. Sources, best first:
-          //  1. the Next-user <a>'s href (userid param) — Moodle computes the real next user
-          //  2. re-fetch the traditional grade page and read select[name="userid"] sequence
-          //  3. select[data-selected] (pending next user grading_navigation last wrote —
-          //     instant but can be stale, so it's the last resort)
-          // Returns { uid, trusted }. trusted sources reflect real navigation order:
-          // MAG's own session list (built by runGradeOne), the Next-user link href, or the
-          // plain grade page's participant list. data-selected is a last resort, untrusted.
-          const resolveNextUid = async () => {
-            // Anchor on THIS card's student — that's who postGrade just saved a grade for.
-            // The grader <select>'s data-currentuserid can be stale (it read 6875 while the
-            // panel/URL were on 10083), which made the participant-list lookup miss.
-            const cur = student.uid || currentGraderUid();
-
-            const fromSession = magNextUidFor(student.uid) || magNextUidFor(cur);
-            if (fromSession && fromSession !== cur) { console.warn('[MAG] Move: next uid from session list:', fromSession); return { uid: fromSession, trusted: true }; }
-
-            const a = /** @type {HTMLAnchorElement|null} */(document.querySelector(
-              'a[data-action="next-user"], a[data-action="nextuser"], [data-region="user-selector"] a[href*="userid"]'
-            ));
-            const m = (a?.getAttribute('href') || '').match(/[?&]userid=(\d+)/);
-            if (m && m[1] !== cur) { console.warn('[MAG] Move: next uid from next-user href:', m[1]); return { uid: m[1], trusted: true }; }
-
-            for (const gp of [
-              `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&action=grading`,        // submissions table — all students
-              `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`,
-            ]) {
-              try {
-                const resp = await xhr('GET', gp);
-                const doc  = new DOMParser().parseFromString(resp.responseText, 'text/html');
-                const list = parseStudentList(doc).map(s => s.uid);
-                const i = list.indexOf(cur);
-                console.warn('[MAG] Move: list from', gp.split('&action=')[1], '— HTTP', resp.status, '| participants', list.length, '| curIdx', i);
-                if (i >= 0 && list[i + 1]) { console.warn('[MAG] Move: next uid from participant list:', list[i + 1]); return { uid: list[i + 1], trusted: true }; }
-              } catch (e) { console.warn('[MAG] Move: list fetch failed:', /** @type {any} */(e).message); }
-            }
-
-            // data-selected is what Moodle's OWN grader nav uses as the pending next user.
-            // On builds that expose no participant list to us (participants 1 above), it's
-            // the only source there is — trust it when it's a valid, different uid.
-            const pending = graderSelect()?.getAttribute('data-selected');
-            if (pending && /^\d+$/.test(pending) && pending !== cur && pending !== student.uid) {
-              console.warn('[MAG] Move: next uid from data-selected:', pending);
-              return { uid: pending, trusted: true };
-            }
-            return { uid: '', trusted: false };
-          };
-
-          if (stayBtn) stayBtn.onclick = () => {
+          if (stayBtn) stayBtn.onclick = async () => {
             cancelTimer();
-            clearMoodleFormDirty();
+            if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
+            // Let applyResultToLiveDom's pending write passes actually finish before this
+            // click reaches Moodle — see moveBtn's onclick below for why.
+            const wait = applyPassesSettleBy - Date.now();
+            if (wait > 0) await sleep(wait);
+            if (!stillOnThisStudent()) return;
+            // Click Moodle's own "Save changes" button — re-submits the live form (which
+            // applyResultToLiveDom already filled), clears the "dirty" flag, and stays on
+            // this student without navigation. Same logic as Save & Move / saveandshownext.
+            const saveChangesBtn = /** @type {HTMLElement|null} */(document.querySelector(
+              'button[name="savechanges"]'
+            ));
+            if (saveChangesBtn) saveChangesBtn.click();
+            // Transform Done into a plain close button (timer is gone)
             if (doneBtn) { doneBtn.textContent = 'Done ✓'; doneBtn.onclick = () => reviewOverlay.classList.remove('open'); }
           };
 
           if (moveBtn) moveBtn.onclick = async () => {
             cancelTimer();
+            if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
+
+            // Console evidence (v2.5.72) showed Moodle's OWN GradingPanel code throwing an
+            // uncaught exception in its post-save dirty-flag cleanup (getFormFromChild
+            // reading .closest on undefined), immediately followed by the navigation storm —
+            // this looks like a genuine bug in Moodle's grading panel JS, exposed by
+            // navigating while our own feedback/remark writes (applyResultToLiveDom Phase 2,
+            // staggered up to 1500ms out) are still in flight. Let those actually finish —
+            // not cancel them — before this click reaches Moodle, so its internal state has
+            // settled by the time it processes a save+navigate.
+            const wait = applyPassesSettleBy - Date.now();
+            if (wait > 0) await sleep(wait);
+            if (!stillOnThisStudent()) return; // re-check: Moodle may have moved on during the wait
+
+            // NOW cancel the pending 2-second full-reapply retry (scheduled when the grade
+            // was first posted, above) — this one we do want stopped before navigating away,
+            // unlike the passes just waited for above.
             _cancelLiveTimers();
-            clearMoodleFormDirty(); // grade is already saved server-side — form is clean, truthfully
 
-            // Hard page-load fallback (closes the panel, but always works). Only used if
-            // in-page nav can't be done.
-            const hardFallback = async () => {
-              const { uid } = await resolveNextUid();
-              if (uid && uid !== student.uid) hardNavTo(uid);
-              else setStatus('Grade saved. Use Moodle\'s Next (▶) arrow to continue.', '#ffb060');
-            };
+            // Try clearing Moodle core's own "unsaved changes" dirty flag (documented API:
+            // M.core_formchangechecker.reset_form_dirty_state) and using the plain next-user
+            // navigation, instead of the compound "save and show next" button below. postGrade
+            // already saved everything via AJAX, so the reset is accurate, not a lie — and it
+            // avoids the one remaining synthetic click in this flow that removing rubric-cell
+            // clicking (v2.5.70, reverted) didn't fix, so is worth ruling in or out on its own.
+            // Only try this when the API is actually present: without it, a plain next-user
+            // click could trigger a real "unsaved changes?" confirm() dialog a script can't
+            // dismiss, hanging the flow — worse than the flicker this is meant to fix.
+            const formChangeChecker = /** @type {any} */(window).M?.core_formchangechecker;
+            if (!formChangeChecker?.reset_form_dirty_state) {
+              console.log('[MAG] Move: M.core_formchangechecker.reset_form_dirty_state not available on this page — using saveandshownext fallback.');
+            } else {
+              try { formChangeChecker.reset_form_dirty_state(); } catch {}
+              const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
+                '[data-action="next-user"], [data-action="nextuser"]'
+              ));
+              if (nextUser) { console.log('[MAG] Move: dirty flag reset, navigating via plain next-user.'); nextUser.click(); return; }
+            }
 
-            // Preferred: Moodle's OWN in-page (SPA) navigation, so the MAG panel stays open —
-            // the navWatcher sees the user change and onMoodleNavigated updates the card (and
-            // auto-grades the next student in Grade-All/Grade-N mode). The grade is saved via
-            // the web service and the form's been marked clean, so this should not prompt.
-            const nextBtn = /** @type {HTMLElement|null} */(document.querySelector(
-              'a[data-action="next-user"], [data-action="next-user"], [data-action="nextuser"]'
+            // Fallback (formchangechecker unavailable, or its next-user element missing):
+            // Moodle's own "Save and show next" button submits the grading form and navigates
+            // in one step, clearing the "dirty" flag set by applyResultToLiveDom itself and
+            // bypassing the unsaved-changes confirmation dialog.
+            const saveAndNext = /** @type {HTMLElement|null} */(document.querySelector(
+              'button[name="saveandshownext"], input[name="saveandshownext"], ' +
+              '[data-action="save-and-next"], [data-action="save-and-show-next"], ' +
+              'button[name="saveandnext"], input[name="saveandnext"]'
             ));
-            if (!nextBtn) { await hardFallback(); return; }
-
-            const beforeUrl = new URL(location.href).searchParams.get('userid') || '';
-            const beforeSel = graderSelect()?.getAttribute('data-currentuserid') || graderSelect()?.value || '';
-            nextBtn.click();
-
-            let ticks = 0;
-            const poll = setInterval(() => {
-              ticks++;
-              // Unsaved-changes dialog popped anyway → the grade IS saved, so cancel it
-              // (never let Moodle's broken save run) and hard-navigate instead.
-              const dlg = [...document.querySelectorAll('.modal.show, [role="dialog"]')].find(m =>
-                /** @type {HTMLElement} */(m).offsetParent !== null
-                && /unsaved changes|save the changes/i.test(m.textContent || ''));
-              if (dlg) {
-                ([...dlg.querySelectorAll('button, .btn')].find(b => /cancel/i.test(b.textContent || '')))?.click();
-                clearInterval(poll);
-                console.warn('[MAG] Move: dialog appeared despite clean form — cancelled, hard-navigating');
-                hardFallback();
-                return;
-              }
-              // Moved in-page → done; navWatcher/onMoodleNavigated takes it from here.
-              const nowUrl = new URL(location.href).searchParams.get('userid') || '';
-              const nowSel = graderSelect()?.getAttribute('data-currentuserid') || graderSelect()?.value || '';
-              if ((nowUrl && nowUrl !== beforeUrl) || (nowSel && nowSel !== beforeSel)) {
-                clearInterval(poll);
-                return;
-              }
-              if (ticks >= 14) { clearInterval(poll); hardFallback(); } // ~2.1s, nothing moved
-            }, 150);
+            if (saveAndNext) {
+              saveAndNext.click();
+            } else {
+              // Last resort: plain next-user click (may still trigger Moodle's dialog)
+              const mNext = /** @type {HTMLElement|null} */(document.querySelector(
+                '[data-action="next-user"], [data-action="nextuser"]'
+              ));
+              if (mNext) mNext.click();
+            }
           };
         }
       } catch (err) {
@@ -5057,12 +4807,6 @@ ${checkInstructions}`;
       }
     };
     activeGradeCurrentFn = gradeCurrentStudent; // expose so the toolbar button can re-trigger
-    // Expose next-student resolution to the Move button (which lives in wireCardButtons,
-    // outside this closure). Uses the full ordered list built above.
-    magNextUidFor = (/** @type {string} */ uid) => {
-      const i = students.findIndex(s => s.uid === uid);
-      return (i >= 0 && students[i + 1]) ? students[i + 1].uid : '';
-    };
 
     // ── Navigation helpers ────────────────────────────────────────────────────
 
@@ -5385,10 +5129,6 @@ ${checkInstructions}`;
   // Holds the gradeCurrentStudent fn of the active session so the toolbar button
   // can re-trigger grading for the currently focused student without opening a new panel.
   let activeGradeCurrentFn = /** @type {(()=>Promise<void>)|null} */ (null);
-  // Ordered classmate list from the active grading session — runGradeOne builds a proper
-  // full list (the AMD grader's own <select> is empty), and the Move button needs it to
-  // hard-navigate to the correct next student. Given a uid, returns the next uid or ''.
-  let magNextUidFor = /** @type {(uid: string) => string} */ (() => '');
   let gradeAllActive    = false; // set true by "Grade All" — triggers auto-post and auto-advance
   let gradeNRemaining   = 0;    // set to N by "Grade N" — decrements after each auto-post; stops at 0
   let autoSkipCount     = 0;    // consecutive auto-advances without grading; stops cycling when ≥ totalStudents
