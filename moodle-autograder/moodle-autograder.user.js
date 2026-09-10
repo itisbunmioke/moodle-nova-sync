@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.17
+// @version      2.6.18
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2690,6 +2690,12 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     const bodyStr = fdToBody(fd);
     setStatus(`Posting grade for ${student.name}…`, '#c9a0ff');
 
+    // ── DIAGNOSTIC: what advanced-grading / session fields are we actually sending?
+    console.log('[MAG] postGrade args:', { assignmentid: parseInt(assignDbId), userid: parseInt(student.uid), assignDbIdRaw: assignDbId });
+    console.log('[MAG] postGrade advancedgrading fields:',
+      [...fd.entries()].filter(([k]) => /advancedgrading|sesskey|_qf__|gradingmethod|attemptnumber/i.test(k))
+        .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`));
+
     // 6. Try the web service first (works on some Moodle installs).
     //    Moodle 4.x AMD passes jsonformdata as JSON.stringify(urlEncodedString).
     try {
@@ -2699,9 +2705,10 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
         attemptnumber: -1,
         jsonformdata:  JSON.stringify(bodyStr),
       });
+      console.log('[MAG] postGrade: web service accepted');
       return true;
-    } catch {
-      // Web service not available on this Moodle — form POST fallback below
+    } catch (wsErr) {
+      console.warn('[MAG] postGrade: web service rejected —', /** @type {any} */(wsErr).message);
     }
 
     // 7. Fallback: traditional form POST (view.php?action=submitgrade in body).
@@ -2715,25 +2722,47 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     const respDoc = new DOMParser().parseFromString(postR.responseText, 'text/html');
     const errEl   = respDoc.querySelector('.errorbox, .alert-danger, .alert-error, .moodle-exception-message');
     if (errEl) throw new Error(errEl.textContent.trim().slice(0, 200));
+    // Advanced-grading validation errors render inline (not in an errorbox) and Moodle
+    // just re-shows the form instead of redirecting. If the response still contains the
+    // grading form, the save did NOT go through.
+    if (respDoc.querySelector('form#mform1 [name^="advancedgrading"]') && !/action=grading/.test(postR.finalUrl || '')) {
+      const inlineErr = respDoc.querySelector('.error, [id$="error"], .felement .text-danger');
+      console.warn('[MAG] form POST re-rendered the grading form (save likely failed). Inline error:', inlineErr?.textContent?.trim()?.slice(0, 160) || '(none found)');
+    }
     if (postR.status >= 400) throw new Error(`Grade POST failed: HTTP ${postR.status}`);
 
-    // The POST can return 200 + a redirect and STILL not have persisted the rubric (e.g.
-    // when the criterion field names were wrong). Verify by re-fetching this student's
-    // grade page and confirming a rubric level is now marked selected — otherwise the
-    // caller would report a false success and the user would lose the grade on navigation.
+    // STRICT verify: re-fetch this student's grade page and confirm the EXACT levelids MAG
+    // set are the ones now selected server-side. A loose "any level looks checked" test
+    // gives false positives from stale grades.
     if ((rubric || []).length && rubricFieldsSet > 0) {
       try {
+        const wantLevelIds = new Set(
+          (result.scores || []).map(/** @param {any} s */ s => {
+            const c = rubric[s.criterionIndex];
+            return c && matchRubricLevel(c, s.pointsAwarded)?.id;
+          }).filter(Boolean).map(String)
+        );
         const check = await xhr('GET', student.gradeLink);
         const cdoc  = new DOMParser().parseFromString(check.responseText, 'text/html');
-        const anySelected = !!cdoc.querySelector(
-          'td.level.checked, [id*="-levels-"].checked, td.level[aria-checked="true"], input[name*="[criteria]"][name*="[levelid]"]:not([value=""])'
-        );
-        if (!anySelected) {
-          throw new Error('Grade POST returned OK but the rubric did not save on the server (criterion-field mismatch). Feedback may have saved; the rubric did not.');
+        // Selected levelids on the server-rendered page: checked cells' id suffix, or
+        // non-empty hidden levelid inputs.
+        const serverLevelIds = new Set(/** @type {string[]} */([
+          ...[...cdoc.querySelectorAll('td.level.checked, [id*="-levels-"].checked, td.level[aria-checked="true"]')]
+            .map(el => (el.id.match(/-levels-(\d+)$/) || [])[1]).filter(Boolean),
+          ...[...cdoc.querySelectorAll('input[name*="[criteria]"][name*="[levelid]"]')]
+            .map(el => /** @type {HTMLInputElement} */(el).value?.trim()).filter(v => v && v !== '0'),
+        ]));
+        const matched = [...wantLevelIds].filter(id => serverLevelIds.has(id));
+        console.log('[MAG] postGrade verify: wanted', [...wantLevelIds], '| server has', [...serverLevelIds], '| matched', matched.length + '/' + wantLevelIds.size);
+        if (wantLevelIds.size && matched.length === 0) {
+          throw new Error('Rubric did NOT persist server-side — none of the selected levels are saved. (Feedback may have saved.) Do not navigate away; grade this student manually.');
         }
-        console.log('[MAG] postGrade: verified rubric persisted on server');
+        if (matched.length < wantLevelIds.size) {
+          console.warn('[MAG] postGrade verify: only', matched.length, 'of', wantLevelIds.size, 'levels persisted — partial save');
+        }
+        console.log('[MAG] postGrade: rubric persistence verified (' + matched.length + '/' + wantLevelIds.size + ')');
       } catch (e) {
-        if (/did not save on the server/.test(/** @type {any} */(e).message)) throw e;
+        if (/did NOT persist/.test(/** @type {any} */(e).message)) throw e;
         console.warn('[MAG] postGrade: could not verify rubric save:', /** @type {any} */(e).message);
       }
     }
@@ -4518,13 +4547,15 @@ ${checkInstructions}`;
             // hard-nav is the only reliable route.
             const { uid, trusted } = await resolveNextUid();
             const cur = currentGraderUid();
-            if (uid && uid !== cur) {
-              if (!trusted) console.warn('[MAG] Move: next uid is a best-guess (' + uid + ') — verify you landed on the right student');
+            // Only navigate on a TRUSTED next uid. An untrusted/wrong target reloads the
+            // same page and looks like it "wiped" the grade (it didn't — the cosmetic paint
+            // just isn't reloaded). Better to leave the user put.
+            if (uid && trusted && uid !== cur && uid !== student.uid) {
               hardNavTo(uid);
               return;
             }
-            console.warn('[MAG] Move: could not determine the next student. Grade is saved — use Moodle\'s Prev/Next arrows.');
-            setStatus('Grade saved. Could not auto-advance — use Moodle\'s Next arrow.', '#ffb060');
+            console.warn('[MAG] Move: no trusted next student (uid=' + (uid || 'none') + ', trusted=' + trusted + ', cur=' + cur + '). Grade is saved — advance with Moodle\'s Next arrow.');
+            setStatus('Grade saved. Auto-advance unavailable here — use Moodle\'s Next (▶) arrow.', '#ffb060');
           };
         }
       } catch (err) {
