@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.15
+// @version      2.6.16
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1106,10 +1106,10 @@
       // Willis rubric has no separate description text under the criterion name
       const desc = '';
 
-      // Criterion ID from tr id: "rubric-criteria-{criterionId}".
-      // Moodle 4 grader omits the id on tr.criterion — fall back to extracting it
-      // from the first td.level id: "rubric-criteria-{cid}-levels-{lid}".
-      let criterionId = (row.id.match(/rubric-criteria-(\d+)$/) || [])[1] || null;
+      // Criterion ID from tr id: "rubric-criteria-{criterionId}" (older markup) or
+      // "advancedgrading-criteria-{criterionId}" (Moodle 4.x AMD grader). Moodle 4 often
+      // omits the id on tr.criterion — fall back to the first td.level id below.
+      let criterionId = (row.id.match(/(?:rubric|advancedgrading)-criteria-(\d+)$/) || [])[1] || null;
 
       const levels = [];
       const levelEls = row.querySelectorAll('td.level');
@@ -1118,7 +1118,7 @@
         const levelId = (lvl.id.match(/-levels-(\d+)$/) || [])[1] || null;
         // Opportunistically extract criterionId from level cell id when tr has no id
         if (!criterionId && lvl.id) {
-          criterionId = (lvl.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1] || null;
+          criterionId = (lvl.id.match(/^(?:rubric|advancedgrading)-criteria-(\d+)-levels-/) || [])[1] || null;
         }
         // Score: span.scorevalue (confirmed); fall back to div.score textContent
         const scoreEl = lvl.querySelector('.scorevalue') || lvl.querySelector('.score');
@@ -2716,6 +2716,27 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     const errEl   = respDoc.querySelector('.errorbox, .alert-danger, .alert-error, .moodle-exception-message');
     if (errEl) throw new Error(errEl.textContent.trim().slice(0, 200));
     if (postR.status >= 400) throw new Error(`Grade POST failed: HTTP ${postR.status}`);
+
+    // The POST can return 200 + a redirect and STILL not have persisted the rubric (e.g.
+    // when the criterion field names were wrong). Verify by re-fetching this student's
+    // grade page and confirming a rubric level is now marked selected — otherwise the
+    // caller would report a false success and the user would lose the grade on navigation.
+    if ((rubric || []).length && rubricFieldsSet > 0) {
+      try {
+        const check = await xhr('GET', student.gradeLink);
+        const cdoc  = new DOMParser().parseFromString(check.responseText, 'text/html');
+        const anySelected = !!cdoc.querySelector(
+          'td.level.checked, [id*="-levels-"].checked, td.level[aria-checked="true"], input[name*="[criteria]"][name*="[levelid]"]:not([value=""])'
+        );
+        if (!anySelected) {
+          throw new Error('Grade POST returned OK but the rubric did not save on the server (criterion-field mismatch). Feedback may have saved; the rubric did not.');
+        }
+        console.log('[MAG] postGrade: verified rubric persisted on server');
+      } catch (e) {
+        if (/did not save on the server/.test(/** @type {any} */(e).message)) throw e;
+        console.warn('[MAG] postGrade: could not verify rubric save:', /** @type {any} */(e).message);
+      }
+    }
     return true;
   }
 
@@ -4450,6 +4471,9 @@ ${checkInstructions}`;
           //  2. re-fetch the traditional grade page and read select[name="userid"] sequence
           //  3. select[data-selected] (pending next user grading_navigation last wrote —
           //     instant but can be stale, so it's the last resort)
+          // Returns { uid, trusted }. trusted=true only for sources that reflect real
+          // navigation order (the Next-user link, or the plain grade page's user list).
+          // data-selected is a last resort and NOT trusted for a destructive hard-nav.
           const resolveNextUid = async () => {
             const cur = currentGraderUid() || student.uid;
 
@@ -4457,7 +4481,7 @@ ${checkInstructions}`;
               'a[data-action="next-user"], a[data-action="nextuser"], [data-region="user-selector"] a[href*="userid"]'
             ));
             const m = (a?.getAttribute('href') || '').match(/[?&]userid=(\d+)/);
-            if (m && m[1] !== cur) { console.warn('[MAG] Move: next uid from next-user href:', m[1]); return m[1]; }
+            if (m && m[1] !== cur) { console.warn('[MAG] Move: next uid from next-user href:', m[1]); return { uid: m[1], trusted: true }; }
 
             try {
               const gp   = `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`;
@@ -4469,12 +4493,12 @@ ${checkInstructions}`;
               const opts = us ? [...us.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || '')) : [];
               const i = opts.indexOf(cur);
               console.warn('[MAG] Move: grade-page list — HTTP', resp.status, '| select', !!us, '| opts', opts.length, '| curIdx', i);
-              if (i >= 0 && opts[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', opts[i + 1]); return opts[i + 1]; }
+              if (i >= 0 && opts[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', opts[i + 1]); return { uid: opts[i + 1], trusted: true }; }
             } catch (e) { console.warn('[MAG] Move: grade-page fetch for next uid failed:', /** @type {any} */(e).message); }
 
             const pending = graderSelect()?.getAttribute('data-selected');
-            if (pending && /^\d+$/.test(pending) && pending !== cur) { console.warn('[MAG] Move: next uid from data-selected (may be stale):', pending); return pending; }
-            return '';
+            if (pending && /^\d+$/.test(pending) && pending !== cur) { console.warn('[MAG] Move: next uid from data-selected (untrusted):', pending); return { uid: pending, trusted: false }; }
+            return { uid: '', trusted: false };
           };
 
           if (stayBtn) stayBtn.onclick = () => {
@@ -4488,13 +4512,14 @@ ${checkInstructions}`;
             _cancelLiveTimers();
             clearMoodleFormDirty();
 
-            const nextUid = await resolveNextUid();
-            if (nextUid && nextUid !== currentGraderUid()) { hardNavTo(nextUid); return; }
+            const { uid, trusted } = await resolveNextUid();
+            // The grade is verified-saved by postGrade before this row ever appears, so a
+            // hard-nav is non-destructive — but only do it to a TRUSTED next uid. Otherwise
+            // click Moodle's own Next button (it computes the right target even if its
+            // dialog shows) and let the user click through.
+            if (uid && trusted && uid !== currentGraderUid()) { hardNavTo(uid); return; }
 
-            // Couldn't resolve a next student — fall back to Moodle's own button and hope it
-            // navigates (grade's saved, so even if its dialog appears the worst case is the
-            // user clicks through it).
-            console.warn('[MAG] Move: could not resolve next uid — falling back to Moodle next-user button');
+            console.warn('[MAG] Move: no trusted next uid (' + (uid || 'none') + ') — using Moodle next-user button');
             const nb = /** @type {HTMLElement|null} */(document.querySelector(
               'a[data-action="next-user"], [data-action="next-user"], [data-action="nextuser"]'
             ));
