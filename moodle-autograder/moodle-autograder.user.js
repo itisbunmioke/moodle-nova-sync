@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.10
+// @version      2.6.11
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @connect      *
 // @connect      generativelanguage.googleapis.com
 // @connect      api.anthropic.com
@@ -23,6 +24,13 @@
 
 (function () {
   'use strict';
+
+  // The REAL page window. MAG runs in Tampermonkey's sandbox (any @grant switches it on),
+  // where Moodle's page-context globals — `require` (RequireJS/AMD loader), `M` (Moodle's
+  // config + YUI namespace), `tinymce` — are NOT visible as `window.*`. Reach them through
+  // unsafeWindow. DOM (`document`) and @require'd libs (fflate, XLSX, pdfjsLib) stay on the
+  // sandbox `window` and must NOT go through here.
+  const PW = /** @type {any} */(typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
 
   // ── API endpoints ────────────────────────────────────────────────────────
   const GEMINI_ENDPOINT      = /** @param {string} k @param {string} m */ (k, m) =>
@@ -94,7 +102,7 @@
   let _cachedAssignDbId  = /** @type {string|null} */ (null);
 
   function getSesskey() {
-    const live = /** @type {any} */(window).M?.cfg?.sesskey
+    const live = PW.M?.cfg?.sesskey
         || document.querySelector('input[name=sesskey]')?.value || '';
     if (live) _cachedSesskey = live;
     return live || _cachedSesskey;
@@ -126,8 +134,8 @@
   // call time and is guaranteed synchronous.
   let _magChangeChecker = /** @type {any} */(null);
   (function preloadChangeChecker() {
-    const req = /** @type {any} */(window).require;
-    if (typeof req !== 'function') return;
+    const req = PW.require;
+    if (typeof req !== 'function') { console.warn('[MAG] PW.require not a function at init — retrying on first use'); return; }
     try {
       req(['core_form/changechecker'], (/** @type {any} */ m) => {
         _magChangeChecker = m;
@@ -157,15 +165,18 @@
 
     // Legacy YUI checker: no-arg calls that reset every registered form.
     try {
-      const y = /** @type {any} */(window).M?.core_formchangechecker;
+      const y = PW.M?.core_formchangechecker;
       if (y?.reset_form_dirty_state) { y.reset_form_dirty_state(); log.push('M.ccc.reset_form_dirty_state'); }
       if (y?.set_form_submitted)     { y.set_form_submitted();     log.push('M.ccc.set_form_submitted'); }
     } catch (e) { log.push('M.ccc threw: ' + /** @type {any} */(e).message); }
 
     let cc = _magChangeChecker;
-    if (!cc) {
-      try { cc = /** @type {any} */(window).require?.('core_form/changechecker'); if (cc) log.push('cc via sync require'); }
+    if (!cc && typeof PW.require === 'function') {
+      try { cc = PW.require('core_form/changechecker'); if (cc) { _magChangeChecker = cc; log.push('cc via sync require'); } }
       catch (e) { log.push('sync require threw: ' + /** @type {any} */(e).message); }
+      // Not resolvable synchronously — kick off an async load so the NEXT call (Stay/Move,
+      // seconds later) has it cached.
+      if (!cc) { try { PW.require(['core_form/changechecker'], (/** @type {any} */ m) => { _magChangeChecker = m; }); } catch {} }
     }
     if (cc) {
       for (const f of forms) {
@@ -399,7 +410,7 @@
         // TinyMCE 6 exposes itself on window.tinymce even through Moodle's AMD loader.
         const ta   = getFeedbackTA();
         const edId = ta?.id || 'id_assignfeedbackcomments_editor';
-        const tiny = /** @type {any} */(window).tinymce || /** @type {any} */(window).tinyMCE;
+        const tiny = PW.tinymce || PW.tinyMCE;
         const ed   = tiny?.get(edId) || (tiny?.editors?.length && tiny.editors[0]);
         if (ed && typeof ed.setContent === 'function') {
           ed.setContent(feedbackHtml);
