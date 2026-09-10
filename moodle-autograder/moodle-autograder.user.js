@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.25
+// @version      2.6.26
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -280,11 +280,12 @@
                || (cell.id.match(/(?:^rubric|^advancedgrading)-criteria-(\d+)-levels-/) || [])[1]
                || /** @type {any} */(cell).dataset?.criterionid
                || null;
-      // Set the hidden levelid input too (cosmetic mode included) — direct .value, no event.
-      // Move navigates by hard page-load so this isn't load-bearing, but if the user clicks
-      // Stay and later saves the form in Moodle's own UI, the rubric is correct rather than
-      // blank. postGrade already saved server-side regardless.
-      if (cid) {
+      // Set the hidden levelid input — but NOT in cosmetic mode. Changing a form field's
+      // value is what Moodle's grading panel snapshots as "unsaved changes", which then
+      // forces its dialog and blocks in-page navigation. The grade is already saved on the
+      // server via postGrade's web-service call, so cosmetic mode only needs the visual
+      // highlight (the CSS class set above — not a form field, so it doesn't dirty anything).
+      if (cid && !cosmetic) {
         const inp = /** @type {HTMLInputElement|null} */(
           document.querySelector(`input[name="advancedgrading[criteria][${cid}][levelid]"]`)
         );
@@ -306,6 +307,13 @@
         return;
       }
     }
+
+    // Cosmetic mode stops here. Phase 2 writes into remark textareas and the feedback
+    // editor — form fields whose changed values Moodle's grading panel reads as "unsaved
+    // changes", which then blocks clean in-page navigation. Everything Phase 2 would write
+    // is already saved on the server by postGrade; the rubric highlight (CSS classes, done
+    // in Phase 1) is all cosmetic mode needs. Re-baseline the change-checker and return.
+    if (cosmetic) { clearMoodleFormDirty(); return; }
 
     // ── Phase 2: write justifications to remark textareas ────────────────────
     // Runs immediately AND again after 700 ms (in case AMD reveals textareas
