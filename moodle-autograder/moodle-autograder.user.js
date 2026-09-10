@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.9
+// @version      2.6.10
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -120,36 +120,66 @@
   };
   const _cancelLiveTimers = () => { _liveTimers.forEach(clearTimeout); _liveTimers.clear(); };
 
+  // Cached reference to core_form/changechecker. RequireJS's synchronous `require('name')`
+  // only works for a module already resolved via a callback require somewhere — so grab it
+  // once, up front, and keep the reference. Then clearMoodleFormDirty needs no require() at
+  // call time and is guaranteed synchronous.
+  let _magChangeChecker = /** @type {any} */(null);
+  (function preloadChangeChecker() {
+    const req = /** @type {any} */(window).require;
+    if (typeof req !== 'function') return;
+    try {
+      req(['core_form/changechecker'], (/** @type {any} */ m) => {
+        _magChangeChecker = m;
+        console.log('[MAG] core_form/changechecker preloaded — methods:', m && Object.keys(m));
+      }, () => console.warn('[MAG] core_form/changechecker failed to preload'));
+    } catch (e) { console.warn('[MAG] preloadChangeChecker threw:', e); }
+  })();
+
   // Tell Moodle its grading form has no unsaved changes. The grade — rubric, remarks and
   // feedback — is already saved by postGrade's web-service call, and the live DOM now shows
   // that same state, so this is truthful, not a lie. Without it, navigating to another
   // student triggers Moodle's "Unsaved changes" dialog, which sits UNDER the MAG panel and
   // silently blocks navigation.
   //
-  // Must run SYNCHRONOUSLY so it takes effect before the next-user click that follows it:
-  // RequireJS's `require('name')` (string form, no callback) returns an already-loaded
-  // module immediately; the callback form fires a tick too late. `core_form/changechecker`
-  // is always loaded on a grading page. Three levers, most-surgical first:
-  //   resetFormDirtyState(form) — re-snapshot current state as the new "clean" baseline
-  //   markFormSubmitted(form)   — flag the form as saved
-  //   disableAllChecks()        — turn the guard off for the page session (belt: MAG owns
-  //                               saves + navigation here, so the guard only gets in the way)
+  // Levers, most-surgical first — resetFormDirtyState (re-snapshot as clean baseline),
+  // markFormSubmitted (flag as saved), disableAllChecks (turn the guard off for the page
+  // session — MAG owns saving + navigation here so the guard only obstructs). All logged so
+  // a failing build shows which lever was actually available.
   function clearMoodleFormDirty() {
-    const form = document.querySelector('form#mform1');
+    const log = /** @type {string[]} */([]);
+    // The grader's form isn't always form#mform1 — cover the likely selectors and, failing
+    // that, every <form> on the page.
+    const forms = /** @type {HTMLFormElement[]} */([...new Set([
+      ...document.querySelectorAll('form#mform1, form.gradeform, [data-region="grade-panel"] form, [data-region="review-panel"] form'),
+      ...document.querySelectorAll('form'),
+    ])]);
+
+    // Legacy YUI checker: no-arg calls that reset every registered form.
     try {
       const y = /** @type {any} */(window).M?.core_formchangechecker;
-      y?.reset_form_dirty_state?.();
-    } catch {}
-    const req = /** @type {any} */(window).require;
-    if (typeof req !== 'function') return;
-    /** @param {any} cc */
-    const apply = (cc) => {
-      try { if (form && cc?.resetFormDirtyState) cc.resetFormDirtyState(form); } catch {}
-      try { if (form && cc?.markFormSubmitted)   cc.markFormSubmitted(form); } catch {}
-      try { cc?.disableAllChecks?.(); } catch {}
-    };
-    try { apply(req('core_form/changechecker')); return; } catch { /* not yet loaded */ }
-    try { req(['core_form/changechecker'], apply); } catch {}
+      if (y?.reset_form_dirty_state) { y.reset_form_dirty_state(); log.push('M.ccc.reset_form_dirty_state'); }
+      if (y?.set_form_submitted)     { y.set_form_submitted();     log.push('M.ccc.set_form_submitted'); }
+    } catch (e) { log.push('M.ccc threw: ' + /** @type {any} */(e).message); }
+
+    let cc = _magChangeChecker;
+    if (!cc) {
+      try { cc = /** @type {any} */(window).require?.('core_form/changechecker'); if (cc) log.push('cc via sync require'); }
+      catch (e) { log.push('sync require threw: ' + /** @type {any} */(e).message); }
+    }
+    if (cc) {
+      for (const f of forms) {
+        const before = (() => { try { return cc.isFormDirty?.(f); } catch { return '?'; } })();
+        try { cc.resetFormDirtyState?.(f); } catch {}
+        try { cc.markFormSubmitted?.(f); } catch {}
+        const after = (() => { try { return cc.isFormDirty?.(f); } catch { return '?'; } })();
+        if (before || before === false) log.push(`${f.id || f.className || 'form'}: dirty ${before}→${after}`);
+      }
+      try { if (cc.disableAllChecks) { cc.disableAllChecks(); log.push('disableAllChecks'); } } catch (e) { log.push('disableAllChecks threw: ' + /** @type {any} */(e).message); }
+    } else {
+      log.push('changechecker module unavailable');
+    }
+    console.log('[MAG] clearMoodleFormDirty →', log.join(' | '));
   }
 
   // After saving a grade the AMD grader still shows the old (unselected) rubric because the
