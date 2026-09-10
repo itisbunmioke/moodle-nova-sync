@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.12
+// @version      2.6.13
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -156,36 +156,32 @@
   // a failing build shows which lever was actually available.
   function clearMoodleFormDirty() {
     const log = /** @type {string[]} */([]);
-    // The grader's form isn't always form#mform1 — cover the likely selectors and, failing
-    // that, every <form> on the page.
-    const forms = /** @type {HTMLFormElement[]} */([...new Set([
-      ...document.querySelectorAll('form#mform1, form.gradeform, [data-region="grade-panel"] form, [data-region="review-panel"] form'),
-      ...document.querySelectorAll('form'),
-    ])]);
 
-    // Legacy YUI checker: no-arg calls that reset every registered form.
+    // Legacy YUI checker (older builds).
     try {
       const y = PW.M?.core_formchangechecker;
-      if (y?.reset_form_dirty_state) { y.reset_form_dirty_state(); log.push('M.ccc.reset_form_dirty_state'); }
-      if (y?.set_form_submitted)     { y.set_form_submitted();     log.push('M.ccc.set_form_submitted'); }
+      if (y?.reset_form_dirty_state) { y.reset_form_dirty_state(); log.push('M.ccc.reset'); }
+      if (y?.set_form_submitted)     { y.set_form_submitted();     log.push('M.ccc.submitted'); }
     } catch (e) { log.push('M.ccc threw: ' + /** @type {any} */(e).message); }
 
     let cc = _magChangeChecker;
     if (!cc && typeof PW.require === 'function') {
-      try { cc = PW.require('core_form/changechecker'); if (cc) { _magChangeChecker = cc; log.push('cc via sync require'); } }
+      try { cc = PW.require('core_form/changechecker'); if (cc) { _magChangeChecker = cc; } }
       catch (e) { log.push('sync require threw: ' + /** @type {any} */(e).message); }
-      // Not resolvable synchronously — kick off an async load so the NEXT call (Stay/Move,
-      // seconds later) has it cached.
       if (!cc) { try { PW.require(['core_form/changechecker'], (/** @type {any} */ m) => { _magChangeChecker = m; }); } catch {} }
     }
     if (cc) {
-      log.push('cc methods: [' + Object.keys(cc).join(',') + ']');
-      for (const f of forms) {
-        const tag = f.id || f.className?.split(/\s+/)[0] || 'form';
-        try { if (cc.resetFormDirtyState) { cc.resetFormDirtyState(f); log.push('reset ' + tag); } } catch (e) { log.push('reset ' + tag + ' threw: ' + /** @type {any} */(e).message); }
-        try { if (cc.markFormSubmitted)   { cc.markFormSubmitted(f);   log.push('submitted ' + tag); } } catch (e) { log.push('submitted ' + tag + ' threw: ' + /** @type {any} */(e).message); }
+      // The "All" variants hit EVERY form the checker is watching — no need to identify
+      // which form mod_assign's grading panel registered (form.id is unreliable anyway:
+      // DOM-clobbered by <input name="id"> in Moodle forms). Then per-form for good measure,
+      // then the global off switch.
+      try { cc.resetAllFormDirtyStates?.(); log.push('resetAll'); } catch (e) { log.push('resetAll threw: ' + /** @type {any} */(e).message); }
+      try { cc.markAllFormsSubmitted?.();   log.push('submittedAll'); } catch (e) { log.push('submittedAll threw: ' + /** @type {any} */(e).message); }
+      for (const f of /** @type {HTMLFormElement[]} */([...document.querySelectorAll('form')])) {
+        try { cc.resetFormDirtyState?.(f); cc.markFormSubmitted?.(f); } catch {}
       }
-      try { if (cc.disableAllChecks) { cc.disableAllChecks(); log.push('disableAllChecks'); } } catch (e) { log.push('disableAllChecks threw: ' + /** @type {any} */(e).message); }
+      try { cc.disableAllChecks?.(); log.push('disableAll'); } catch (e) { log.push('disableAll threw: ' + /** @type {any} */(e).message); }
+      try { log.push('anyDirty=' + cc.isAnyWatchedFormDirty?.()); } catch {}
     } else {
       log.push('changechecker module unavailable');
     }
@@ -4426,19 +4422,30 @@ ${checkInstructions}`;
           ))?.value?.trim() || '';
           const stillOnThisStudent = () => { const u = uidFromSelect(); return !u || u === student.uid; };
 
-          // Click the Save/"Save & continue" button of Moodle's unsaved-changes modal, if one
-          // is showing. Returns true if it clicked something.
+          // Find Moodle's unsaved-changes prompt by TEXT (its container class varies by
+          // build), climb to a dialog-ish box, click its Save/continue button.
           const clickUnsavedDialogSave = () => {
-            const modals = [...document.querySelectorAll('.modal.show, [role="dialog"]')]
-              .filter(m => /** @type {HTMLElement} */(m).offsetParent !== null
-                        && /unsaved changes|save the changes/i.test(m.textContent || ''));
-            for (const m of modals) {
-              const btn = /** @type {HTMLElement|null} */(
-                [...m.querySelectorAll('button, .btn')].find(b => /save.*(continue|next)|continue/i.test(b.textContent || ''))
-                || m.querySelector('[data-action="save"], .modal-footer .btn-primary')
-              );
-              if (btn) { console.warn('[MAG] Move: clicking unsaved-changes dialog →', btn.textContent?.trim()); btn.click(); return true; }
+            const marker = [...document.querySelectorAll('.modal-title, h1, h2, h3, h4, h5, p, div, span')]
+              .find(el => el instanceof HTMLElement && el.offsetParent !== null
+                       && (el.textContent || '').length < 300
+                       && /unsaved changes|save the changes and continue/i.test(el.textContent || ''));
+            if (!marker) return false;
+            let box = /** @type {HTMLElement} */(marker);
+            for (let i = 0; i < 10 && box.parentElement; i++) {
+              box = box.parentElement;
+              if (box.matches('.modal, [role="dialog"], .moodle-dialogue, [data-region*="modal"], .modal-dialog')) break;
             }
+            const btns = /** @type {HTMLElement[]} */([...box.querySelectorAll('button, a.btn, input[type="button"], input[type="submit"], [data-action]')])
+              .filter(b => b.offsetParent !== null);
+            const save = btns.find(b => /save.*(continue|next|and)|^continue$/i.test((b.textContent || /** @type {HTMLInputElement} */(b).value || '').trim()))
+                      || btns.find(b => b.getAttribute('data-action') === 'save')
+                      || btns.find(b => b.classList.contains('btn-primary'));
+            if (save) {
+              console.warn('[MAG] Move: unsaved-changes dialog Save →', (save.textContent || /** @type {HTMLInputElement} */(save).value || '').trim());
+              save.click();
+              return true;
+            }
+            console.warn('[MAG] Move: found "unsaved changes" text but no Save button. Box:', box.outerHTML.slice(0, 400));
             return false;
           };
 
@@ -4475,7 +4482,7 @@ ${checkInstructions}`;
 
             const startUid = student.uid;
             const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
-              '[data-action="next-user"], [data-action="nextuser"]'
+              '[data-action="next-user"], [data-action="nextuser"], [data-region="user-selector"] a[href*="userid"]'
             ));
             if (nextUser) nextUser.click(); else { document.getElementById('mag-next-btn')?.click(); return; }
 
@@ -4487,14 +4494,20 @@ ${checkInstructions}`;
               ticks++;
               const sel = uidFromSelect();
               const moved = !!sel && sel !== startUid;
-              const modalUp = !!document.querySelector('.modal.show');
+              const modalUp = !!document.querySelector('.modal.show, .moodle-dialogue');
               if (moved && !modalUp) { clearInterval(poll); return; } // clean nav
               if (!savedClicked && clickUnsavedDialogSave()) { savedClicked = true; return; }
-              if (ticks >= 16) { // ~2.4s
+              if (ticks >= 20) { // ~3s
                 clearInterval(poll);
                 const target = moved ? sel : nextUidFromOptions(startUid);
-                if (target) { console.warn('[MAG] Move: forcing hard-nav to', target); hardNavTo(target); }
-                else console.warn('[MAG] Move: stuck, no next uid resolvable (savedClicked=' + savedClicked + ')');
+                if (target) { console.warn('[MAG] Move: forcing hard-nav to', target); hardNavTo(target); return; }
+                // Nothing resolved — dump the DOM so the next round has real data.
+                console.warn('[MAG] Move STUCK (savedClicked=' + savedClicked + ').');
+                console.warn('[MAG]  modals:', [...document.querySelectorAll('.modal, [role="dialog"], .moodle-dialogue, [data-region*="modal"]')]
+                  .map(m => `${m.tagName}.${m.className} vis=${/** @type {HTMLElement} */(m).offsetParent !== null} :: ${(m.textContent || '').replace(/\s+/g, ' ').slice(0, 140)}`));
+                console.warn('[MAG]  nav controls:', [...document.querySelectorAll('[data-action], [data-region="user-selector"] *')]
+                  .map(e => `${e.tagName}[data-action=${e.getAttribute('data-action')}] .${e.className}`.slice(0, 90)).slice(0, 30));
+                console.warn('[MAG]  user select:', document.querySelector('select#change-user-select, select[data-action="change-user"]')?.outerHTML?.slice(0, 600));
               }
             }, 150);
           };
