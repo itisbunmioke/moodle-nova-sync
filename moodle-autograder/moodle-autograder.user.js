@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.18
+// @version      2.6.19
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2744,14 +2744,16 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
         );
         const check = await xhr('GET', student.gradeLink);
         const cdoc  = new DOMParser().parseFromString(check.responseText, 'text/html');
-        // Selected levelids on the server-rendered page: checked cells' id suffix, or
-        // non-empty hidden levelid inputs.
+        // Only the SELECTED level per criterion: a :checked radio, a checked/current cell,
+        // or (when the page uses one hidden input per criterion) its non-empty value.
         const serverLevelIds = new Set(/** @type {string[]} */([
-          ...[...cdoc.querySelectorAll('td.level.checked, [id*="-levels-"].checked, td.level[aria-checked="true"]')]
-            .map(el => (el.id.match(/-levels-(\d+)$/) || [])[1]).filter(Boolean),
-          ...[...cdoc.querySelectorAll('input[name*="[criteria]"][name*="[levelid]"]')]
-            .map(el => /** @type {HTMLInputElement} */(el).value?.trim()).filter(v => v && v !== '0'),
-        ]));
+          ...[...cdoc.querySelectorAll('input[name*="[criteria]"][name*="[levelid]"]:checked')]
+            .map(el => /** @type {HTMLInputElement} */(el).value?.trim()),
+          ...[...cdoc.querySelectorAll('td.level.checked, td.level.currentchecked, td.level[aria-checked="true"]')]
+            .map(el => (el.id.match(/-levels-(\d+)$/) || [])[1]),
+          ...[...cdoc.querySelectorAll('input[type="hidden"][name*="[criteria]"][name$="[levelid]"]')]
+            .map(el => /** @type {HTMLInputElement} */(el).value?.trim()),
+        ].filter(v => v && v !== '0')));
         const matched = [...wantLevelIds].filter(id => serverLevelIds.has(id));
         console.log('[MAG] postGrade verify: wanted', [...wantLevelIds], '| server has', [...serverLevelIds], '| matched', matched.length + '/' + wantLevelIds.size);
         if (wantLevelIds.size && matched.length === 0) {
@@ -4515,18 +4517,28 @@ ${checkInstructions}`;
             const m = (a?.getAttribute('href') || '').match(/[?&]userid=(\d+)/);
             if (m && m[1] !== cur) { console.warn('[MAG] Move: next uid from next-user href:', m[1]); return { uid: m[1], trusted: true }; }
 
-            try {
-              const gp   = `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`;
-              const resp = await xhr('GET', gp);
-              const doc  = new DOMParser().parseFromString(resp.responseText, 'text/html');
-              const list = parseStudentList(doc).map(s => s.uid);
-              const i = list.indexOf(cur);
-              console.warn('[MAG] Move: grade-page list — HTTP', resp.status, '| participants', list.length, '| curIdx', i);
-              if (i >= 0 && list[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', list[i + 1]); return { uid: list[i + 1], trusted: true }; }
-            } catch (e) { console.warn('[MAG] Move: grade-page fetch for next uid failed:', /** @type {any} */(e).message); }
+            for (const gp of [
+              `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&action=grading`,        // submissions table — all students
+              `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`,
+            ]) {
+              try {
+                const resp = await xhr('GET', gp);
+                const doc  = new DOMParser().parseFromString(resp.responseText, 'text/html');
+                const list = parseStudentList(doc).map(s => s.uid);
+                const i = list.indexOf(cur);
+                console.warn('[MAG] Move: list from', gp.split('&action=')[1], '— HTTP', resp.status, '| participants', list.length, '| curIdx', i);
+                if (i >= 0 && list[i + 1]) { console.warn('[MAG] Move: next uid from participant list:', list[i + 1]); return { uid: list[i + 1], trusted: true }; }
+              } catch (e) { console.warn('[MAG] Move: list fetch failed:', /** @type {any} */(e).message); }
+            }
 
+            // data-selected is what Moodle's OWN grader nav uses as the pending next user.
+            // On builds that expose no participant list to us (participants 1 above), it's
+            // the only source there is — trust it when it's a valid, different uid.
             const pending = graderSelect()?.getAttribute('data-selected');
-            if (pending && /^\d+$/.test(pending) && pending !== cur) { console.warn('[MAG] Move: next uid from data-selected (untrusted):', pending); return { uid: pending, trusted: false }; }
+            if (pending && /^\d+$/.test(pending) && pending !== cur && pending !== student.uid) {
+              console.warn('[MAG] Move: next uid from data-selected:', pending);
+              return { uid: pending, trusted: true };
+            }
             return { uid: '', trusted: false };
           };
 
