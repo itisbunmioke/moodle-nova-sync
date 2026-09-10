@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.16
+// @version      2.6.17
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4471,11 +4471,14 @@ ${checkInstructions}`;
           //  2. re-fetch the traditional grade page and read select[name="userid"] sequence
           //  3. select[data-selected] (pending next user grading_navigation last wrote —
           //     instant but can be stale, so it's the last resort)
-          // Returns { uid, trusted }. trusted=true only for sources that reflect real
-          // navigation order (the Next-user link, or the plain grade page's user list).
-          // data-selected is a last resort and NOT trusted for a destructive hard-nav.
+          // Returns { uid, trusted }. trusted sources reflect real navigation order:
+          // MAG's own session list (built by runGradeOne), the Next-user link href, or the
+          // plain grade page's participant list. data-selected is a last resort, untrusted.
           const resolveNextUid = async () => {
             const cur = currentGraderUid() || student.uid;
+
+            const fromSession = magNextUidFor(student.uid) || magNextUidFor(cur);
+            if (fromSession && fromSession !== cur) { console.warn('[MAG] Move: next uid from session list:', fromSession); return { uid: fromSession, trusted: true }; }
 
             const a = /** @type {HTMLAnchorElement|null} */(document.querySelector(
               'a[data-action="next-user"], a[data-action="nextuser"], [data-region="user-selector"] a[href*="userid"]'
@@ -4487,13 +4490,10 @@ ${checkInstructions}`;
               const gp   = `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`;
               const resp = await xhr('GET', gp);
               const doc  = new DOMParser().parseFromString(resp.responseText, 'text/html');
-              const us   = /** @type {HTMLSelectElement|null} */(
-                doc.querySelector('select[name="userid"], select#id_userid, [data-region="user-selector"] select')
-              );
-              const opts = us ? [...us.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || '')) : [];
-              const i = opts.indexOf(cur);
-              console.warn('[MAG] Move: grade-page list — HTTP', resp.status, '| select', !!us, '| opts', opts.length, '| curIdx', i);
-              if (i >= 0 && opts[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', opts[i + 1]); return { uid: opts[i + 1], trusted: true }; }
+              const list = parseStudentList(doc).map(s => s.uid);
+              const i = list.indexOf(cur);
+              console.warn('[MAG] Move: grade-page list — HTTP', resp.status, '| participants', list.length, '| curIdx', i);
+              if (i >= 0 && list[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', list[i + 1]); return { uid: list[i + 1], trusted: true }; }
             } catch (e) { console.warn('[MAG] Move: grade-page fetch for next uid failed:', /** @type {any} */(e).message); }
 
             const pending = graderSelect()?.getAttribute('data-selected');
@@ -4512,18 +4512,19 @@ ${checkInstructions}`;
             _cancelLiveTimers();
             clearMoodleFormDirty();
 
-            const { uid, trusted } = await resolveNextUid();
             // The grade is verified-saved by postGrade before this row ever appears, so a
-            // hard-nav is non-destructive — but only do it to a TRUSTED next uid. Otherwise
-            // click Moodle's own Next button (it computes the right target even if its
-            // dialog shows) and let the user click through.
-            if (uid && trusted && uid !== currentGraderUid()) { hardNavTo(uid); return; }
-
-            console.warn('[MAG] Move: no trusted next uid (' + (uid || 'none') + ') — using Moodle next-user button');
-            const nb = /** @type {HTMLElement|null} */(document.querySelector(
-              'a[data-action="next-user"], [data-action="next-user"], [data-action="nextuser"]'
-            ));
-            if (nb) nb.click(); else document.getElementById('mag-next-btn')?.click();
+            // hard page-load is non-destructive. Moodle's own SPA "next" won't move until a
+            // save goes through ITS path (which fails on this assignment's web service), so
+            // hard-nav is the only reliable route.
+            const { uid, trusted } = await resolveNextUid();
+            const cur = currentGraderUid();
+            if (uid && uid !== cur) {
+              if (!trusted) console.warn('[MAG] Move: next uid is a best-guess (' + uid + ') — verify you landed on the right student');
+              hardNavTo(uid);
+              return;
+            }
+            console.warn('[MAG] Move: could not determine the next student. Grade is saved — use Moodle\'s Prev/Next arrows.');
+            setStatus('Grade saved. Could not auto-advance — use Moodle\'s Next arrow.', '#ffb060');
           };
         }
       } catch (err) {
@@ -4934,6 +4935,12 @@ ${checkInstructions}`;
       }
     };
     activeGradeCurrentFn = gradeCurrentStudent; // expose so the toolbar button can re-trigger
+    // Expose next-student resolution to the Move button (which lives in wireCardButtons,
+    // outside this closure). Uses the full ordered list built above.
+    magNextUidFor = (/** @type {string} */ uid) => {
+      const i = students.findIndex(s => s.uid === uid);
+      return (i >= 0 && students[i + 1]) ? students[i + 1].uid : '';
+    };
 
     // ── Navigation helpers ────────────────────────────────────────────────────
 
@@ -5256,6 +5263,10 @@ ${checkInstructions}`;
   // Holds the gradeCurrentStudent fn of the active session so the toolbar button
   // can re-trigger grading for the currently focused student without opening a new panel.
   let activeGradeCurrentFn = /** @type {(()=>Promise<void>)|null} */ (null);
+  // Ordered classmate list from the active grading session — runGradeOne builds a proper
+  // full list (the AMD grader's own <select> is empty), and the Move button needs it to
+  // hard-navigate to the correct next student. Given a uid, returns the next uid or ''.
+  let magNextUidFor = /** @type {(uid: string) => string} */ (() => '');
   let gradeAllActive    = false; // set true by "Grade All" — triggers auto-post and auto-advance
   let gradeNRemaining   = 0;    // set to N by "Grade N" — decrements after each auto-post; stops at 0
   let autoSkipCount     = 0;    // consecutive auto-advances without grading; stops cycling when ≥ totalStudents
