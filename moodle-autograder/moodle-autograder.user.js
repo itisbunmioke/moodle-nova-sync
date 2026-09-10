@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.5
+// @version      2.6.6
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1911,6 +1911,33 @@ Your response is the JSON object described above, and nothing else. Do not expla
     return JSON.parse(match[0]);
   }
 
+  // Pull every COMPLETE feedback object out of a response whose outer JSON won't parse —
+  // almost always because the model's output was truncated mid-array by a provider-side
+  // cutoff. Keeps every finished { "text": ..., "evidence": ... } item and silently drops
+  // the trailing partial one, so a cut-off response still yields real feedback instead of
+  // leaking raw JSON scaffolding into the student's comment box.
+  function salvageFeedbackItems(/** @type {string} */ raw) {
+    const S = '"((?:[^"\\\\]|\\\\.)*)"';                 // a complete JSON string body
+    const unquote = (/** @type {string} */ body) => { try { return JSON.parse(`"${body}"`); } catch { return null; } };
+    // Anchor on each complete "text": "..." pair; scope its "evidence" to the slice before
+    // the next "text" key (or end). This never depends on brace balancing, so an evidence
+    // string containing { } (code, f-strings, dict literals) can't throw the parse off.
+    const textRe = new RegExp(`"text"\\s*:\\s*${S}`, 'g');
+    const evidRe = new RegExp(`"evidence"\\s*:\\s*${S}`);
+    const hits = [];
+    let m;
+    while ((m = textRe.exec(raw))) hits.push({ body: m[1], start: m.index, end: textRe.lastIndex });
+    const items = [];
+    for (let i = 0; i < hits.length; i++) {
+      const text = unquote(hits[i].body);
+      if (!text) continue;
+      const sliceEnd = i + 1 < hits.length ? hits[i + 1].start : raw.length;
+      const em = raw.slice(hits[i].end, sliceEnd).match(evidRe);
+      items.push({ text, evidence: em ? (unquote(em[1]) || '') : '' });
+    }
+    return items;
+  }
+
   // callAI: Gemini → OpenRouter → Mistral → Groq → Cloudflare → Ollama (local) → HuggingFace
   // Order reflects quality / context-window for academic rubric grading.
   /** @param {string} prompt @param {object|null} [inlineData] */
@@ -2304,8 +2331,8 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
   }
 
   // buildFeedbackPrompt now asks for { "feedback": [{text, evidence}, ...] } JSON — call the
-  // AI, parse that shape, and ground it. Falls back to raw text (no evidence grounding
-  // possible) if the model doesn't return the expected JSON, rather than losing the response.
+  // AI, parse that shape, and ground it. Falls back progressively (salvage truncated JSON →
+  // treat as plain prose) rather than ever letting raw JSON scaffolding reach a student.
   async function generateGroundedFeedback(/** @type {string} */ feedPrompt, /** @type {boolean} */ useClaude, /** @type {string} */ submissionText) {
     const raw = useClaude ? (await callClaude(feedPrompt)).trim() : (await callAI(feedPrompt, null)).trim();
     try {
@@ -2315,6 +2342,23 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       // extract the string rather than falling through to posting the raw JSON text.
       if (typeof parsed?.feedback === 'string') return stripThinking(parsed.feedback.trim());
     } catch {}
+
+    // Outer JSON didn't parse — usually a provider-side truncation mid-array. Salvage the
+    // complete {text, evidence} items that DID come through, so a cut-off response still
+    // yields real feedback (minus the trailing partial sentence) instead of raw JSON.
+    const salvaged = salvageFeedbackItems(raw);
+    if (salvaged.length) {
+      console.warn(`[MAG] Feedback JSON was malformed/truncated — salvaged ${salvaged.length} complete item(s).`);
+      return groundFeedback(salvaged, submissionText);
+    }
+
+    // Nothing salvageable. If the response still looks like JSON scaffolding, a student
+    // must never receive it verbatim — return empty and let the caller fall back to the
+    // overall comment. Only pass through when it reads as genuine plain prose.
+    if (/"feedback"\s*:\s*\[|"text"\s*:\s*"|"evidence"\s*:|^\s*[\[{]/.test(raw)) {
+      console.warn('[MAG] Feedback response was unparseable JSON with nothing salvageable — suppressed so it is not posted as raw JSON. Raw:', raw.slice(0, 200));
+      return '';
+    }
     console.warn('[MAG] Feedback response was not the expected JSON shape — using raw text without evidence grounding:', raw.slice(0, 200));
     return stripThinking(raw);
   }
