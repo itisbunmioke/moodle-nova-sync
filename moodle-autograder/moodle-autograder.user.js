@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.11
+// @version      2.6.12
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -179,12 +179,11 @@
       if (!cc) { try { PW.require(['core_form/changechecker'], (/** @type {any} */ m) => { _magChangeChecker = m; }); } catch {} }
     }
     if (cc) {
+      log.push('cc methods: [' + Object.keys(cc).join(',') + ']');
       for (const f of forms) {
-        const before = (() => { try { return cc.isFormDirty?.(f); } catch { return '?'; } })();
-        try { cc.resetFormDirtyState?.(f); } catch {}
-        try { cc.markFormSubmitted?.(f); } catch {}
-        const after = (() => { try { return cc.isFormDirty?.(f); } catch { return '?'; } })();
-        if (before || before === false) log.push(`${f.id || f.className || 'form'}: dirty ${before}→${after}`);
+        const tag = f.id || f.className?.split(/\s+/)[0] || 'form';
+        try { if (cc.resetFormDirtyState) { cc.resetFormDirtyState(f); log.push('reset ' + tag); } } catch (e) { log.push('reset ' + tag + ' threw: ' + /** @type {any} */(e).message); }
+        try { if (cc.markFormSubmitted)   { cc.markFormSubmitted(f);   log.push('submitted ' + tag); } } catch (e) { log.push('submitted ' + tag + ' threw: ' + /** @type {any} */(e).message); }
       }
       try { if (cc.disableAllChecks) { cc.disableAllChecks(); log.push('disableAllChecks'); } } catch (e) { log.push('disableAllChecks threw: ' + /** @type {any} */(e).message); }
     } else {
@@ -282,13 +281,14 @@
       }
 
       const cid = criterion?.criterionId
-               || (cell.id.match(/^rubric-criteria-(\d+)-levels-/) || [])[1]
+               || (cell.id.match(/(?:^rubric|^advancedgrading)-criteria-(\d+)-levels-/) || [])[1]
                || /** @type {any} */(cell).dataset?.criterionid
                || null;
-      // In cosmetic mode leave the hidden levelid inputs untouched: creating or changing
-      // them is a form-structure change Moodle's change-checker snapshots as "dirty".
-      // postGrade already submitted the correct levelids.
-      if (cid && !cosmetic) {
+      // Set the hidden levelid input too (cosmetic mode included). It's a direct .value
+      // assignment (no event), and it means the live form carries the correct rubric — so
+      // if Moodle's own "Save & continue" ends up submitting it, it saves the right grade,
+      // not a blank rubric. postGrade already saved server-side regardless.
+      if (cid) {
         const inp = /** @type {HTMLInputElement|null} */(
           document.querySelector(`input[name="advancedgrading[criteria][${cid}][levelid]"]`)
         );
@@ -4415,39 +4415,88 @@ ${checkInstructions}`;
           document.addEventListener('keydown', keyHandler);
           doneBtn.onclick = dismiss;
 
-          // The grade is already saved by postGrade's web-service call, and the cosmetic
-          // live-DOM pass above dirtied nothing. So Stay/Move are pure UI/navigation now —
-          // they must NOT click Moodle's savechanges / saveandshownext form buttons, which
-          // re-submit the grading form and run _handleFormSubmissionResponse (the
-          // getFormFromChild(undefined).closest crash → nav storm). If Moodle's own
-          // auto-advance already moved the page on, navWatcher handles the new student.
-          const stillOnThisStudent = () => {
-            const nowUid = /** @type {HTMLSelectElement|null} */(document.querySelector(
-              'select#change-user-select, select[data-action="change-user"]'
-            ))?.value?.trim() || '';
-            return !nowUid || nowUid === student.uid;
+          // The grade is already saved by postGrade. The cosmetic pass filled the live form
+          // to MATCH (rubric levelids, remarks, feedback) without any synthetic clicks or
+          // events. So it's now safe to let Moodle's own save/navigate run: if it re-submits
+          // the form it just re-saves the same correct grade. Move clicks next-user and, when
+          // Moodle's "Unsaved changes" dialog appears, clicks its "Save & continue" — exactly
+          // what the user asked for. Hard page-navigation is the fallback if that stalls.
+          const uidFromSelect = () => /** @type {HTMLSelectElement|null} */(document.querySelector(
+            'select#change-user-select, select[data-action="change-user"]'
+          ))?.value?.trim() || '';
+          const stillOnThisStudent = () => { const u = uidFromSelect(); return !u || u === student.uid; };
+
+          // Click the Save/"Save & continue" button of Moodle's unsaved-changes modal, if one
+          // is showing. Returns true if it clicked something.
+          const clickUnsavedDialogSave = () => {
+            const modals = [...document.querySelectorAll('.modal.show, [role="dialog"]')]
+              .filter(m => /** @type {HTMLElement} */(m).offsetParent !== null
+                        && /unsaved changes|save the changes/i.test(m.textContent || ''));
+            for (const m of modals) {
+              const btn = /** @type {HTMLElement|null} */(
+                [...m.querySelectorAll('button, .btn')].find(b => /save.*(continue|next)|continue/i.test(b.textContent || ''))
+                || m.querySelector('[data-action="save"], .modal-footer .btn-primary')
+              );
+              if (btn) { console.warn('[MAG] Move: clicking unsaved-changes dialog →', btn.textContent?.trim()); btn.click(); return true; }
+            }
+            return false;
+          };
+
+          // Full page load to a specific student on the AMD grader — bypasses the SPA's
+          // dirty check entirely. Grade is already saved so nothing is lost.
+          const hardNavTo = (/** @type {string} */ uid) => {
+            const url = new URL(location.href);
+            url.searchParams.set('userid', uid);
+            url.searchParams.set('action', 'grader');
+            location.assign(url.href);
           };
 
           if (stayBtn) stayBtn.onclick = () => {
             cancelTimer();
-            // Grade already saved; "Stay" just means keep this student on screen. Nothing to
-            // submit — belt-and-braces clear the dirty flag and turn Done into a close button.
             clearMoodleFormDirty();
             if (doneBtn) { doneBtn.textContent = 'Done ✓'; doneBtn.onclick = () => reviewOverlay.classList.remove('open'); }
           };
 
+          const nextUidFromOptions = (/** @type {string} */ from) => {
+            const s = /** @type {HTMLSelectElement|null} */(document.querySelector(
+              'select#change-user-select, select[data-action="change-user"]'
+            ));
+            if (!s) return '';
+            const opts = [...s.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || ''));
+            const i = opts.indexOf(from);
+            return (i >= 0 && opts[i + 1]) ? opts[i + 1] : '';
+          };
+
           if (moveBtn) moveBtn.onclick = () => {
             cancelTimer();
-            if (!stillOnThisStudent()) return; // Moodle already auto-advanced; navWatcher handles it
-            _cancelLiveTimers(); // stop the 2 s cosmetic re-apply before we leave this student
-            // Grade is saved. Clear Moodle's dirty flag (truthfully — nothing unsaved) then
-            // navigate with the plain user switcher, which does NOT submit the form.
-            clearMoodleFormDirty();
+            if (!stillOnThisStudent()) return; // Moodle already advanced; navWatcher handles it
+            _cancelLiveTimers();
+            clearMoodleFormDirty(); // best-effort; also kills the beforeunload prompt
+
+            const startUid = student.uid;
             const nextUser = /** @type {HTMLElement|null} */(document.querySelector(
               '[data-action="next-user"], [data-action="nextuser"]'
             ));
-            if (nextUser) { nextUser.click(); return; }
-            document.getElementById('mag-next-btn')?.click();
+            if (nextUser) nextUser.click(); else { document.getElementById('mag-next-btn')?.click(); return; }
+
+            // Moodle now either navigates straight away, shows the unsaved-changes dialog, or
+            // stalls. Poll and resolve: clean nav → done; dialog → click its Save & continue;
+            // stuck → hard page-load to the next student (grade's already saved).
+            let ticks = 0, savedClicked = false;
+            const poll = setInterval(() => {
+              ticks++;
+              const sel = uidFromSelect();
+              const moved = !!sel && sel !== startUid;
+              const modalUp = !!document.querySelector('.modal.show');
+              if (moved && !modalUp) { clearInterval(poll); return; } // clean nav
+              if (!savedClicked && clickUnsavedDialogSave()) { savedClicked = true; return; }
+              if (ticks >= 16) { // ~2.4s
+                clearInterval(poll);
+                const target = moved ? sel : nextUidFromOptions(startUid);
+                if (target) { console.warn('[MAG] Move: forcing hard-nav to', target); hardNavTo(target); }
+                else console.warn('[MAG] Move: stuck, no next uid resolvable (savedClicked=' + savedClicked + ')');
+              }
+            }, 150);
           };
         }
       } catch (err) {
