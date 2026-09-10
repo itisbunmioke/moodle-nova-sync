@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.19
+// @version      2.6.20
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2600,21 +2600,36 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     //    Only fall back to fetching the static ?action=grade page if the live form is absent
     //    or belongs to a different student.
     let /** @type {HTMLFormElement|null} */ form = null;
-    const liveForm = /** @type {HTMLFormElement|null} */(document.querySelector('form#mform1'));
+    const liveForm = /** @type {HTMLFormElement|null} */(document.querySelector(
+      'form#mform1, [data-region="grade-panel"] form, [data-region="grade"] form, form.gradeform'
+    ));
     const liveUid  = /** @type {HTMLInputElement|null} */(liveForm?.querySelector('input[name=userid]'))?.value;
     if (liveForm && (!liveUid || liveUid === student.uid)) {
       form = liveForm;
-      console.log('[MAG] Using live DOM form | userid in form:', liveUid || '(not found)');
+      console.log('[MAG] postGrade: using LIVE DOM form (' + (liveForm.id || liveForm.className || '?') + ') | userid:', liveUid || '(none)');
     } else {
-      if (liveForm) console.log('[MAG] Live form userid', liveUid, '≠', student.uid, '— fetching static page');
+      console.log('[MAG] postGrade: no usable live form (liveForm=' + !!liveForm + ', liveUid=' + liveUid + ', want=' + student.uid + ') — fetching static grade page');
       const pageResp = await xhr('GET', student.gradeLink);
       const formDoc  = new DOMParser().parseFromString(pageResp.responseText, 'text/html');
       form = /** @type {HTMLFormElement|null} */(
         formDoc.querySelector('form#mform1') || formDoc.querySelector('form[action*="assign"]')
       );
-      console.log('[MAG] Static grade page HTTP', pageResp.status, '| form found:', !!form);
+      console.log('[MAG] postGrade: static grade page HTTP', pageResp.status, '| form found:', !!form);
     }
     if (!form) throw new Error('Grade form (form#mform1) not found.');
+
+    // Whichever form we ended up with, the SESSION-scoped fields must reflect THIS page's
+    // live session — a fetched static page can carry a stale _qf__ token or advanced-grading
+    // instance id, which is a prime suspect for the web service's "Invalid parameter" and
+    // for the rubric silently not persisting. Pull the live values when the page has them.
+    /** @type {(name:string)=>string|null} */
+    const liveVal = (name) => {
+      const el = /** @type {HTMLInputElement|null} */(document.querySelector(`input[name="${name}"]`));
+      return el ? el.value : null;
+    };
+    const liveAgInstance = liveVal('advancedgradinginstanceid');
+    const liveQfToken     = [...document.querySelectorAll('input[name^="_qf__"]')].map(e => /** @type {HTMLInputElement} */(e).name)[0] || null;
+    console.log('[MAG] postGrade: live session fields — advancedgradinginstanceid:', liveAgInstance, '| _qf__ token:', liveQfToken);
 
     // 2. Copy form inputs into FormData.
     //    Exclusions:
@@ -2687,6 +2702,18 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       fd.set('assignfeedbackcomments_editor[format]', '1');
     }
 
+    // 5b. Force session-scoped fields to this live page's values (see liveVal above). Also
+    // give every rubric criterion a remarkformat — Moodle's rubric handler expects one
+    // alongside each [remark], and its absence is a suspect for the silent no-save.
+    if (liveAgInstance != null) fd.set('advancedgradinginstanceid', liveAgInstance);
+    fd.set('sesskey', getSesskey());
+    for (const criterion of rubric || []) {
+      const cid = /** @type {any} */(criterion).criterionId;
+      if (cid && !fd.has(`advancedgrading[criteria][${cid}][remarkformat]`)) {
+        fd.set(`advancedgrading[criteria][${cid}][remarkformat]`, '0');
+      }
+    }
+
     const bodyStr = fdToBody(fd);
     setStatus(`Posting grade for ${student.name}…`, '#c9a0ff');
 
@@ -2744,12 +2771,12 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
         );
         const check = await xhr('GET', student.gradeLink);
         const cdoc  = new DOMParser().parseFromString(check.responseText, 'text/html');
-        // Only the SELECTED level per criterion: a :checked radio, a checked/current cell,
-        // or (when the page uses one hidden input per criterion) its non-empty value.
         const serverLevelIds = new Set(/** @type {string[]} */([
           ...[...cdoc.querySelectorAll('input[name*="[criteria]"][name*="[levelid]"]:checked')]
             .map(el => /** @type {HTMLInputElement} */(el).value?.trim()),
-          ...[...cdoc.querySelectorAll('td.level.checked, td.level.currentchecked, td.level[aria-checked="true"]')]
+          // Any element whose id ends -levels-N and whose class marks it as the current pick
+          ...[...cdoc.querySelectorAll('[id*="-levels-"]')]
+            .filter(el => /\b(checked|currentchecked|selected)\b/.test(el.className))
             .map(el => (el.id.match(/-levels-(\d+)$/) || [])[1]),
           ...[...cdoc.querySelectorAll('input[type="hidden"][name*="[criteria]"][name$="[levelid]"]')]
             .map(el => /** @type {HTMLInputElement} */(el).value?.trim()),
@@ -2757,6 +2784,12 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
         const matched = [...wantLevelIds].filter(id => serverLevelIds.has(id));
         console.log('[MAG] postGrade verify: wanted', [...wantLevelIds], '| server has', [...serverLevelIds], '| matched', matched.length + '/' + wantLevelIds.size);
         if (wantLevelIds.size && matched.length === 0) {
+          // Dump the rubric region of BOTH the POST response and the re-fetch so we can see
+          // what Moodle actually did with the submission.
+          const rubricHtml = (postR.responseText.match(/advancedgrading[\s\S]{0,400}/) || ['(not in POST response)'])[0].replace(/\s+/g, ' ');
+          console.warn('[MAG] verify FAIL — POST response rubric region:', rubricHtml.slice(0, 400));
+          const cErr = [...cdoc.querySelectorAll('.error, .text-danger, .alert')].map(e => e.textContent?.trim()).filter(Boolean).slice(0, 5);
+          console.warn('[MAG] verify FAIL — re-fetch page errors/alerts:', cErr);
           throw new Error('Rubric did NOT persist server-side — none of the selected levels are saved. (Feedback may have saved.) Do not navigate away; grade this student manually.');
         }
         if (matched.length < wantLevelIds.size) {
@@ -4319,6 +4352,7 @@ ${checkInstructions}`;
       // Animate fill to ~80% immediately (fake progress — snaps fast, slows near end)
       if (progFill) requestAnimationFrame(() => { if (progFill) progFill.style.width = '80%'; });
 
+      let isAutoPost = false; // hoisted so the catch block can read it
       try {
         // Collect edited scores from selects
         const scoreSelects = document.querySelectorAll(`select[data-uid="${student.uid}"]`);
@@ -4356,7 +4390,7 @@ ${checkInstructions}`;
         // what Grade One does when the user clicks "Save & Move".
         // immediate=true skips setTimeout retries that would corrupt the next student's
         // form once Moodle navigates away.
-        const isAutoPost = autoGradeThisPost;
+        isAutoPost = autoGradeThisPost;
         autoGradeThisPost = false;
         if (isAutoPost) {
           // Awaited (not fire-and-forget) — applyResultToLiveDom now pauses briefly between
