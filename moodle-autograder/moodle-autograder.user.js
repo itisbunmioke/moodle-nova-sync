@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.14
+// @version      2.6.15
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4427,12 +4427,22 @@ ${checkInstructions}`;
           };
 
           // Full page load to a specific student on the AMD grader. Grade is already saved.
+          // Use the REAL page location (unsafeWindow) — the sandbox's `location` proxy does
+          // not actually navigate, same lesson as require/M/tinymce. Try several triggers.
           const hardNavTo = (/** @type {string} */ uid) => {
-            const url = new URL(location.href);
-            url.searchParams.set('userid', uid);
-            url.searchParams.set('action', 'grader');
-            console.warn('[MAG] Move: hard-navigating to userid', uid);
-            location.assign(url.href);
+            const loc = PW.location || location;
+            const target = `${loc.origin}/mod/assign/view.php?id=${assignId}&userid=${uid}&action=grader`;
+            console.warn('[MAG] Move: navigating to', target);
+            try { loc.assign(target); } catch (e) { console.warn('[MAG] loc.assign threw:', /** @type {any} */(e).message); }
+            try { loc.href = target; }   catch (e) { console.warn('[MAG] loc.href set threw:', /** @type {any} */(e).message); }
+            try { PW.open?.(target, '_self'); } catch {}
+            setTimeout(() => {
+              try {
+                if (((PW.location || location).href || '').indexOf('userid=' + uid) === -1) {
+                  console.warn('[MAG] Move: navigation did NOT take. Still at', (PW.location || location).href);
+                }
+              } catch {}
+            }, 900);
           };
 
           // The uid to move to. Sources, best first:
@@ -4450,14 +4460,16 @@ ${checkInstructions}`;
             if (m && m[1] !== cur) { console.warn('[MAG] Move: next uid from next-user href:', m[1]); return m[1]; }
 
             try {
-              const resp = await xhr('GET', `${location.origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`);
+              const gp   = `${(PW.location || location).origin}/mod/assign/view.php?id=${assignId}&userid=${cur}&action=grade`;
+              const resp = await xhr('GET', gp);
               const doc  = new DOMParser().parseFromString(resp.responseText, 'text/html');
-              const us   = /** @type {HTMLSelectElement|null} */(doc.querySelector('select[name="userid"]'));
-              if (us) {
-                const opts = [...us.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || ''));
-                const i = opts.indexOf(cur);
-                if (i >= 0 && opts[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', opts[i + 1]); return opts[i + 1]; }
-              }
+              const us   = /** @type {HTMLSelectElement|null} */(
+                doc.querySelector('select[name="userid"], select#id_userid, [data-region="user-selector"] select')
+              );
+              const opts = us ? [...us.options].map(o => o.value?.trim()).filter(v => /^\d+$/.test(v || '')) : [];
+              const i = opts.indexOf(cur);
+              console.warn('[MAG] Move: grade-page list — HTTP', resp.status, '| select', !!us, '| opts', opts.length, '| curIdx', i);
+              if (i >= 0 && opts[i + 1]) { console.warn('[MAG] Move: next uid from grade-page list:', opts[i + 1]); return opts[i + 1]; }
             } catch (e) { console.warn('[MAG] Move: grade-page fetch for next uid failed:', /** @type {any} */(e).message); }
 
             const pending = graderSelect()?.getAttribute('data-selected');
