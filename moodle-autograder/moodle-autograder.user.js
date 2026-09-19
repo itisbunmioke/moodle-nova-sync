@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.27
+// @version      2.6.28
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -234,12 +234,15 @@
       ]);
 
       for (const score of result.scores || []) {
-        if (!score.justification) continue;
         const criterion2 = rubric[score.criterionIndex];
-        // "Deductions only" mode: skip criteria where student earned the maximum points
-        if (CFG.postRemarksDeductedOnly && criterion2) {
+        // Same logic as postGrade's payload: decide whether THIS criterion gets a remark
+        // (has a justification, and isn't excluded by "deductions only"), then always write
+        // the textarea explicitly — to the new text, or to empty — rather than skipping it
+        // and leaving whatever remark is already there from a previous grading round.
+        let wantRemark = !!score.justification;
+        if (wantRemark && CFG.postRemarksDeductedOnly && criterion2) {
           const maxPts = Math.max(0, ...(criterion2.levels || []).map((/** @type {any} */ l) => l.points));
-          if (score.pointsAwarded >= maxPts) continue;
+          if (score.pointsAwarded >= maxPts) wantRemark = false;
         }
         const { row, cid } = rowMap.get(score.criterionIndex) || {};
 
@@ -268,13 +271,13 @@
         if (!ta) ta = allRemarkTAs[score.criterionIndex] ?? null;
 
         if (ta) {
-          ta.value = score.justification;
+          ta.value = wantRemark ? score.justification : '';
           ta.dispatchEvent(new Event('input',  { bubbles: true }));
           ta.dispatchEvent(new Event('change', { bubbles: true }));
-          console.log('[MAG] Wrote remark for criterion', cid ?? score.criterionIndex);
+          console.log('[MAG]', wantRemark ? 'Wrote' : 'Cleared', 'remark for criterion', cid ?? score.criterionIndex);
         } else {
           console.warn('[MAG] Remark textarea not found for criterion', cid ?? score.criterionIndex,
-            '— justification sent via grade POST body only');
+            '— handled via grade POST body only');
         }
       }
     };
@@ -2572,13 +2575,17 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
                   || null;
       if (!prefix) continue;
       fd.set(`${prefix}[levelid]`, String(matchedLevel.id));
-      if (CFG.postRemarks && score.justification) {
+      if (CFG.postRemarks) {
         const maxPts = Math.max(0, ...(criterion.levels || []).map((/** @type {any} */ l) => l.points));
         const isDeducted = score.pointsAwarded < maxPts;
-        if (!CFG.postRemarksDeductedOnly || isDeducted) {
-          fd.set(`${prefix}[remark]`,       score.justification);
-          fd.set(`${prefix}[remarkformat]`, '1');
-        }
+        const wantRemark = !!score.justification && (!CFG.postRemarksDeductedOnly || isDeducted);
+        // Always set explicitly (never skip the field) — on a regrade, `fd` was seeded from
+        // the form's CURRENT values, which include whatever remark is already sitting there
+        // from the previous grading round. Skipping this field when there's no new
+        // justification (blanked by the evidence-grounding guard, or excluded by
+        // "deductions only") left that stale remark in place and posted it unchanged.
+        fd.set(`${prefix}[remark]`,       wantRemark ? score.justification : '');
+        fd.set(`${prefix}[remarkformat]`, '1');
       }
       rubricFieldsSet++;
     }
