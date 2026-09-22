@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.28
+// @version      2.6.29
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @connect      *
 // @connect      generativelanguage.googleapis.com
 // @connect      api.anthropic.com
@@ -23,6 +24,11 @@
 
 (function () {
   'use strict';
+
+  // Any @grant makes `window` a sandboxed proxy that does NOT see the real page's
+  // JS globals (Moodle's `M` namespace, RequireJS, tinymce). PW is the real page
+  // window, needed to reach M.core_formchangechecker below.
+  const PW = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
   // ── API endpoints ────────────────────────────────────────────────────────
   const GEMINI_ENDPOINT      = /** @param {string} k @param {string} m */ (k, m) =>
@@ -1513,7 +1519,7 @@ For every criterion in SCORES where the student received fewer than the maximum 
 If the student received maximum points on every criterion AND you have no specific, verifiable technical observation to add, set "feedback" to an empty array []. Feedback is not mandatory. A blank is better than generic praise or restating the rubric scores. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
 
 — VERIFY BEFORE WRITING —
-Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear" or "I couldn't find" rather than asserting absence. Never state as fact something you cannot verify in the submission text.
+Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear whether..." rather than asserting absence — never "I couldn't find", which reads as a comment on your own search process rather than the student's work. Never state as fact something you cannot verify in the submission text. Do not use this hedge to manufacture vague reassurance ("I didn't spot any problems, so that's a plus") when you have nothing specific to say — omit it instead, per BLANK FEEDBACK below.
 
 NUMBERS MUST BE EXACT: Before stating any specific count — rows sampled, columns, records, iterations, epochs, or any other quantity — find that exact number written in the submission text above. Never estimate, round, recall from a typical assignment, or guess a count from memory. If you cannot locate the precise number, describe it in words instead ("a small sample", "several rows") rather than inventing a figure.
 
@@ -4375,7 +4381,7 @@ ${checkInstructions}`;
             // Only try this when the API is actually present: without it, a plain next-user
             // click could trigger a real "unsaved changes?" confirm() dialog a script can't
             // dismiss, hanging the flow — worse than the flicker this is meant to fix.
-            const formChangeChecker = /** @type {any} */(window).M?.core_formchangechecker;
+            const formChangeChecker = /** @type {any} */(PW).M?.core_formchangechecker;
             if (!formChangeChecker?.reset_form_dirty_state) {
               console.log('[MAG] Move: M.core_formchangechecker.reset_form_dirty_state not available on this page — using saveandshownext fallback.');
             } else {
