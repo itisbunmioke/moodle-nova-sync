@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.29
+// @version      2.6.30
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1517,6 +1517,9 @@ For every criterion in SCORES where the student received fewer than the maximum 
 
 — BLANK FEEDBACK —
 If the student received maximum points on every criterion AND you have no specific, verifiable technical observation to add, set "feedback" to an empty array []. Feedback is not mandatory. A blank is better than generic praise or restating the rubric scores. When deductions exist, DEDUCTION COVERAGE takes priority and feedback cannot be blank.
+
+— NEVER NARRATE YOUR OWN PROCESS (mandatory) —
+Never write a sentence that is about your writing/searching/judging process instead of the student's work. This includes: admitting you have nothing to add ("I'm not sure what else to add", "I couldn't find anything else to say"), filler reassurance dressed as a finding ("it looks like you did a good job", "so that's a plus", "you still managed to produce a good set of visualizations"), and speculating about WHY the work turned out a certain way when that cause isn't visible in the submission ("it's not clear whether that's due to the instructions or your interpretation"). None of these describe anything in the student's actual work — they describe your own uncertainty, and that uncertainty is not feedback. If a sentence would only make sense as a comment ABOUT the act of writing feedback rather than a comment ABOUT the submission, delete it. Having nothing further to say is exactly what BLANK FEEDBACK is for, not a reason to write a sentence about having nothing to say.
 
 — VERIFY BEFORE WRITING —
 Before naming any specific element in feedback — a function, column, heading, chart, slide, formula, or section title — locate it in the submission text above. If you cannot find it there, do not name it. Before saying something is "missing" or "absent", scan the full visible submission. If the topic could be in an omitted section, write "it's not clear whether..." rather than asserting absence — never "I couldn't find", which reads as a comment on your own search process rather than the student's work. Never state as fact something you cannot verify in the submission text. Do not use this hedge to manufacture vague reassurance ("I didn't spot any problems, so that's a plus") when you have nothing specific to say — omit it instead, per BLANK FEEDBACK below.
