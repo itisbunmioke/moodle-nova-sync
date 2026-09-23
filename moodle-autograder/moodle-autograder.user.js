@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.31
+// @version      2.6.32
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4461,9 +4461,17 @@ ${checkInstructions}`;
             await applyResultToLiveDom(rubric, liveResult, { immediate: true });
             await sleep(200);
             if (!stillOnThisStudent()) return;
-            // Click Moodle's own "Save changes" button — re-submits the live form (just
-            // refreshed above), clears the "dirty" flag, and stays on this student without
-            // navigation. Same logic as Save & Move / saveandshownext.
+            // Persist via the same authoritative AJAX save used at the initial post. A
+            // synthetic rubric-cell click (above) updates the DOM/hidden inputs, but native
+            // "Save changes" reading that state back out and submitting it correctly was
+            // never actually proven reliable on its own — it always ran AFTER postGrade had
+            // already saved on the very first post, so its own correctness was never tested
+            // in isolation. On a manual re-adjustment with no fresh postGrade call, that gap
+            // showed up as the adjustment being silently discarded (v2.6.32).
+            await postGrade(student, rubric, liveResult, assignmentId);
+            if (!stillOnThisStudent()) return;
+            // Click Moodle's own "Save changes" button too — clears the "dirty" flag and
+            // keeps Moodle's own UI state consistent with what postGrade just persisted.
             const saveChangesBtn = /** @type {HTMLElement|null} */(document.querySelector(
               'button[name="savechanges"]'
             ));
@@ -4495,11 +4503,18 @@ ${checkInstructions}`;
             await sleep(200);
             if (!stillOnThisStudent()) return; // re-check: Moodle may have moved on during the wait
 
+            // Persist via the same authoritative AJAX save used at the initial post — see the
+            // identical comment in stayBtn's handler above for why this is necessary here too
+            // (v2.6.32): without it, a manual re-adjustment is only painted cosmetically, and
+            // the dirty-flag reset below would then be an outright lie rather than accurate.
+            await postGrade(student, rubric, liveResult, assignmentId);
+            if (!stillOnThisStudent()) return;
+
             // Try clearing Moodle core's own "unsaved changes" dirty flag (documented API:
             // M.core_formchangechecker.reset_form_dirty_state) and using the plain next-user
             // navigation, instead of the compound "save and show next" button below. postGrade
-            // already saved everything via AJAX, so the reset is accurate, not a lie — and it
-            // avoids the one remaining synthetic click in this flow that removing rubric-cell
+            // just saved everything via AJAX above, so the reset is accurate, not a lie — and
+            // it avoids the one remaining synthetic click in this flow that removing rubric-cell
             // clicking (v2.5.70, reverted) didn't fix, so is worth ruling in or out on its own.
             // Only try this when the API is actually present: without it, a plain next-user
             // click could trigger a real "unsaved changes?" confirm() dialog a script can't
