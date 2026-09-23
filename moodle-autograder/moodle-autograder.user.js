@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.32
+// @version      2.6.33
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -233,7 +233,6 @@
     // asynchronously after the cell clicks above).
     // Four strategies per criterion, falling back to positional DOM order.
     const writeRemarks = () => {
-      if (!CFG.postRemarks) return;
       // Positional fallback: all remark-like textareas in DOM order.
       const allRemarkTAs = /** @type {HTMLTextAreaElement[]} */([
         ...document.querySelectorAll('textarea[name*="[remark]"], textarea[name*="criteria"][name*="remark"]'),
@@ -242,10 +241,12 @@
       for (const score of result.scores || []) {
         const criterion2 = rubric[score.criterionIndex];
         // Same logic as postGrade's payload: decide whether THIS criterion gets a remark
-        // (has a justification, and isn't excluded by "deductions only"), then always write
-        // the textarea explicitly — to the new text, or to empty — rather than skipping it
-        // and leaving whatever remark is already there from a previous grading round.
-        let wantRemark = !!score.justification;
+        // (postRemarks is on, has a justification, and isn't excluded by "deductions only"),
+        // then always write the textarea explicitly — to the new text, or to empty — rather
+        // than skipping it and leaving whatever remark is already there from a previous
+        // grading round OR from an earlier post in this session when postRemarks was still
+        // on (bailing out entirely when postRemarks is off left THAT stale text in place).
+        let wantRemark = CFG.postRemarks && !!score.justification;
         if (wantRemark && CFG.postRemarksDeductedOnly && criterion2) {
           const maxPts = Math.max(0, ...(criterion2.levels || []).map((/** @type {any} */ l) => l.points));
           if (score.pointsAwarded >= maxPts) wantRemark = false;
@@ -2645,15 +2646,17 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
                   || null;
       if (!prefix) continue;
       fd.set(`${prefix}[levelid]`, String(matchedLevel.id));
-      if (CFG.postRemarks) {
+      {
         const maxPts = Math.max(0, ...(criterion.levels || []).map((/** @type {any} */ l) => l.points));
         const isDeducted = score.pointsAwarded < maxPts;
-        const wantRemark = !!score.justification && (!CFG.postRemarksDeductedOnly || isDeducted);
-        // Always set explicitly (never skip the field) — on a regrade, `fd` was seeded from
-        // the form's CURRENT values, which include whatever remark is already sitting there
-        // from the previous grading round. Skipping this field when there's no new
-        // justification (blanked by the evidence-grounding guard, or excluded by
-        // "deductions only") left that stale remark in place and posted it unchanged.
+        const wantRemark = CFG.postRemarks && !!score.justification && (!CFG.postRemarksDeductedOnly || isDeducted);
+        // Always set explicitly (never skip the field, and never gate the whole block on
+        // CFG.postRemarks) — `fd` was seeded from the form's CURRENT values, which include
+        // whatever remark is already sitting there from the previous grading round OR from
+        // an earlier post in this session when "Post remarks" was still on. Skipping this
+        // field — whether because there's no new justification (blanked by the evidence-
+        // grounding guard, excluded by "deductions only"), or because postRemarks is simply
+        // off — left that stale remark in place and posted it unchanged (v2.6.33).
         fd.set(`${prefix}[remark]`,       wantRemark ? score.justification : '');
         fd.set(`${prefix}[remarkformat]`, '1');
       }
