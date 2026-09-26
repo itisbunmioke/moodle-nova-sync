@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.33
+// @version      2.6.34
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -3191,6 +3191,7 @@ ${checkInstructions}`;
     .mag-fb-fmt-btn b  { font-weight: 700; }
     .mag-fb-fmt-btn em { font-style: italic; }
     .mag-fb-fmt-btn u  { text-decoration: underline; }
+    .mag-fb-toolbar-sep { width: 1px; background: #4a2080; margin: 2px 2px; }
     .mag-feedback-area {
       width: 100%; box-sizing: border-box; background: #1a0030;
       border: 1px solid #4a2080; border-radius: 6px; color: #f0e8ff;
@@ -3198,6 +3199,8 @@ ${checkInstructions}`;
       min-height: 90px; margin-top: 0; outline: none; overflow-y: auto;
       line-height: 1.5; white-space: pre-wrap;
     }
+    .mag-feedback-area ul, .mag-feedback-area ol { margin: 4px 0; padding-left: 22px; }
+    .mag-feedback-area li { margin: 2px 0; }
     .mag-feedback-area:focus { border-color: #7b2fff; }
     .mag-feedback-label { font-size: 11px; color: #9070c0; margin-bottom: 2px; }
     /* Image attachment area */
@@ -4147,6 +4150,9 @@ ${checkInstructions}`;
            <button class="mag-fb-fmt-btn" data-cmd="bold"      title="Bold (Ctrl+B)"><b>B</b></button>
            <button class="mag-fb-fmt-btn" data-cmd="italic"    title="Italic (Ctrl+I)"><em>I</em></button>
            <button class="mag-fb-fmt-btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+           <span class="mag-fb-toolbar-sep"></span>
+           <button class="mag-fb-fmt-btn" data-cmd="insertUnorderedList" title="Bulleted list">&bull;&bull;&bull;</button>
+           <button class="mag-fb-fmt-btn" data-cmd="insertOrderedList"  title="Numbered list">1.2.3.</button>
          </div>
          <div class="mag-feedback-area" id="mag-fb-${student.uid}" contenteditable="true">${fbHtml}</div>
          <div class="mag-fb-img-area" id="mag-fbimg-${student.uid}">
