@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.39
+// @version      2.6.40
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -115,35 +115,47 @@
     return live || _cachedAssignDbId;
   }
 
-  // Returns the CURRENT logged-in user's id (the grader running this script) — needed for
-  // core_files_upload's contextlevel=user/instanceid, which is the uploading user's own
-  // context, not the student being graded. Two prior approaches both failed on this install:
-  // DOM-scraping a usermenu profile link came up empty (this theme builds its user menu on
-  // demand), and core_webservice_get_site_info isn't in this site's enabled AJAX function
-  // allowlist (an admin setting, confirmed via its own explicit "service not available" error
-  // — not ambiguous). This instead fetches /user/profile.php with NO id param — Moodle renders
-  // that as the viewer's OWN profile, no web service needed — then reads the id back from
-  // either a redirect (if one occurs) or a self-referencing "edit profile" link on that page
-  // (only the profile's owner sees their own edit link). Cached after the first success.
-  let _cachedCurrentUserId = /** @type {string|null} */ (null);
-  async function getCurrentUserId() {
-    if (_cachedCurrentUserId) return _cachedCurrentUserId;
-    try {
-      const r = await xhr('GET', `${location.origin}/user/profile.php`);
-      let m = (r.finalUrl || '').match(/[?&]id=(\d+)/);
-      if (!m) {
-        const doc = new DOMParser().parseFromString(r.responseText, 'text/html');
-        const link = doc.querySelector(
-          'a[href*="/user/edit.php?id="], a[href*="/user/editadvanced.php?id="], a[href*="/user/preferences.php?userid="]'
-        );
-        if (link) m = (link.getAttribute('href') || '').match(/(?:[?&]id=|userid=)(\d+)/);
-      }
-      if (m) _cachedCurrentUserId = m[1];
-      else console.warn('[MAG] getCurrentUserId: no userid found in /user/profile.php response.');
-    } catch (err) {
-      console.warn('[MAG] getCurrentUserId: /user/profile.php fetch failed —', /** @type {Error} */(err).message);
-    }
-    return _cachedCurrentUserId;
+  // Uploads a file into a Moodle draft area via the SAME endpoint Moodle's own file
+  // picker/TinyMCE image browser uses (repository_ajax.php?action=upload) — confirmed against
+  // Moodle 4.5's actual source (repository/repository_ajax.php + repository/upload/lib.php;
+  // this install's own error responses link to docs.moodle.org/405, confirming the branch) and
+  // against a captured real request from this install's own native image-insert flow (repo_id
+  // 4 = "Upload a file" on this site). Three prior web-service-based upload attempts
+  // (core_files_upload) all failed identically with "Web service is not available" — this
+  // site's AJAX external-service allowlist is locked down to only the specific functions
+  // Moodle's own visited pages call, which doesn't include that one. This endpoint is governed
+  // by different (repository-plugin) access rules, not that allowlist, and needs no userid/
+  // contextid guessing at all — it uses the current session directly, same as Moodle's own UI.
+  // Returns {url, id, file} straight from Moodle's own upload() handler; `url` is already a
+  // real draftfile.php link built via moodle_url::make_draftfile_url(), identical in shape to
+  // the one captured from this site's native paste-image flow.
+  async function repoUploadFile(/** @type {string} */ base64, /** @type {string} */ mimeExt, /** @type {string} */ filename, /** @type {string} */ itemid) {
+    const sesskey = getSesskey();
+    if (!sesskey) throw new Error('No sesskey available.');
+    const byteChars = atob(base64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    const blob = new Blob([bytes], { type: `image/${mimeExt}` });
+
+    const fd = new FormData();
+    fd.set('repo_id', '4'); // "Upload a file" repository plugin id on THIS Moodle install
+    fd.set('itemid', String(itemid));
+    fd.set('env', 'editor');
+    fd.set('title', filename);
+    fd.set('maxbytes', '0');
+    fd.set('areamaxbytes', '-1');
+    fd.set('repo_upload_file', blob, filename);
+
+    const url = `${location.origin}/repository/repository_ajax.php?action=upload&sesskey=${encodeURIComponent(sesskey)}`;
+    // Plain fetch (not the GM_xmlhttpRequest-based xhr() helper) — this is a same-origin
+    // request (we're already running on the Moodle page), so no cross-origin @connect
+    // permission is needed, and fetch's native FormData handling sets the multipart
+    // boundary correctly without us having to build it by hand.
+    const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+    const json = await resp.json();
+    console.log('[MAG] repository upload response:', JSON.stringify(json).slice(0, 500));
+    if (!json?.url) throw new Error(json?.error || json?.exception?.message || 'Upload response missing url.');
+    return json;
   }
 
   // Tracks setTimeout IDs created by applyResultToLiveDom and the Grade One 2-second re-apply.
@@ -446,46 +458,25 @@
   // service call (already used by postGrade) correctly transfers a draft file referenced this
   // way into permanent storage on save — the save mechanism was never the problem.
   //
-  // Best-effort and defensive: if upload fails for ANY image (API disabled on this install,
-  // wrong itemid/userid, network error), the ENTIRE feedback string is returned UNCHANGED
-  // (today's base64 behavior) rather than risk a partially-converted, broken result.
+  // Best-effort and defensive: if upload fails for ANY image (see repoUploadFile), the ENTIRE
+  // feedback string is returned UNCHANGED (today's base64 behavior) rather than risk a
+  // partially-converted, broken result.
   async function uploadFeedbackImages(/** @type {string} */ feedbackHtml, /** @type {string|null} */ itemid) {
     const IMG_RE = /<img\s+[^>]*src="data:image\/(\w+);base64,([A-Za-z0-9+/=]+)"[^>]*>/g;
     const matches = [...feedbackHtml.matchAll(IMG_RE)];
     if (!matches.length) return feedbackHtml;
     if (!itemid) { console.warn('[MAG] uploadFeedbackImages: no draft itemid found on form — leaving images inline.'); return feedbackHtml; }
-    const userId = await getCurrentUserId();
-    if (!userId) { console.warn('[MAG] uploadFeedbackImages: could not determine current user id — leaving images inline.'); return feedbackHtml; }
 
     let rewritten = feedbackHtml;
     for (let i = 0; i < matches.length; i++) {
       const [fullTag, ext, base64] = matches[i];
+      const mimeExt  = ext === 'jpeg' ? 'jpeg' : ext;
       const filename = `mag-feedback-img-${Date.now()}-${i}.${ext === 'jpeg' ? 'jpg' : ext}`;
       try {
-        const fileInfo = await moodleAjax('core_files_upload', {
-          contextlevel: 'user',
-          instanceid:   parseInt(userId),
-          component:    'user',
-          filearea:     'draft',
-          itemid:       parseInt(itemid),
-          filepath:     '/',
-          filename,
-          filecontent:  base64,
-        });
-        console.log('[MAG] core_files_upload response:', JSON.stringify(fileInfo));
-        // Prefer whatever URL/contextid Moodle's own response gives us over constructing one
-        // blind — the response shape is the ground truth, this format is our best guess at it.
-        const url = fileInfo?.url
-          || (fileInfo?.contextid
-                ? `${location.origin}/draftfile.php/${fileInfo.contextid}/user/draft/${itemid}/${encodeURIComponent(filename)}`
-                : null);
-        if (!url) {
-          console.warn('[MAG] uploadFeedbackImages: upload succeeded but no usable URL in response — leaving all feedback images inline as base64.');
-          return feedbackHtml;
-        }
-        const newTag = fullTag.replace(/src="data:[^"]*"/, `src="${url}"`);
+        const fileInfo = await repoUploadFile(base64, mimeExt, filename, itemid);
+        const newTag = fullTag.replace(/src="data:[^"]*"/, `src="${fileInfo.url}"`);
         rewritten = rewritten.replace(fullTag, newTag);
-        console.log('[MAG] Uploaded feedback image, referenced as', url);
+        console.log('[MAG] Uploaded feedback image, referenced as', fileInfo.url);
       } catch (err) {
         console.warn('[MAG] uploadFeedbackImages: upload failed for image', i, '—', /** @type {Error} */(err).message, '— leaving all feedback images inline as base64.');
         return feedbackHtml; // all-or-nothing: don't submit a half-converted mix
