@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.40
+// @version      2.6.41
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2091,55 +2091,66 @@ Your response is the JSON object described above, and nothing else. Do not expla
   // callAI: Gemini → OpenRouter → Mistral → Groq → Cloudflare → Ollama (local) → HuggingFace
   // Order reflects quality / context-window for academic rubric grading.
   /** @param {string} prompt @param {object|null} [inlineData] */
+  // Remembers whichever provider last succeeded, for the rest of this page session.
+  // See the reordering note inside callAI for why this matters.
+  let _lastSuccessfulProvider = /** @type {string|null} */ (null);
+
   async function callAI(prompt, inlineData = null) {
-    let geminiErr = /** @type {Error|null} */(null);
-    let lastErr   = /** @type {Error|null} */(null);
-    if (CFG.geminiKey) {
-      try { return await callGemini(prompt, inlineData); } catch (e) {
-        geminiErr = lastErr = /** @type {Error} */(e);
-        setStatus(`Gemini failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
-      }
-    }
     const textPrompt = inlineData
       ? prompt.replace('[No text submission', '[PDF submitted — text unavailable; [No text submission')
       : prompt;
-    if (CFG.openrouterKey) {
-      try { return await callOpenRouter(textPrompt); } catch (e) {
-        lastErr = /** @type {Error} */(e);
-        setStatus(`OpenRouter failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
-      }
+
+    /** @type {{name:string, available:boolean, run:() => Promise<string>}[]} */
+    const providers = [
+      { name: 'Gemini',      available: !!CFG.geminiKey,
+        run: () => callGemini(prompt, inlineData) },
+      { name: 'OpenRouter',  available: !!CFG.openrouterKey,
+        run: () => callOpenRouter(textPrompt) },
+      { name: 'Mistral',     available: !!CFG.mistralKey,
+        run: () => callMistral(textPrompt) },
+      { name: 'Groq',        available: !!CFG.groqKey && !groqNetworkBlocked,
+        run: () => callGroq(textPrompt) },
+      { name: 'Cloudflare',  available: !!(CFG.cloudflareAccountId && CFG.cloudflareKey),
+        run: () => callCloudflare(textPrompt) },
+      { name: 'Ollama',      available: !!CFG.ollamaEnabled,
+        run: () => callOllama(textPrompt) },
+      { name: 'HuggingFace', available: !!CFG.hfKey,
+        run: () => callHuggingFace(textPrompt) },
+    ];
+
+    // Try whichever provider last succeeded THIS session first. Without this, every single
+    // call — including the dozens of tiny one-sentence rewrites stripBannedPhrases can issue
+    // per submission — pays for a guaranteed-failing attempt against a provider already known
+    // to be down (e.g. Gemini mid-outage) before ever reaching one that works, burning through
+    // every other provider's quota far faster than the actual grading workload requires. Pure
+    // optimization: falls through to the normal quality-ranked order below if the sticky
+    // provider fails too, so correctness never regresses, only wasted calls on known-bad
+    // providers are avoided.
+    let ordered = providers;
+    if (_lastSuccessfulProvider) {
+      const idx = providers.findIndex(p => p.name === _lastSuccessfulProvider);
+      if (idx > 0) ordered = [providers[idx], ...providers.slice(0, idx), ...providers.slice(idx + 1)];
     }
-    if (CFG.mistralKey) {
-      try { return await callMistral(textPrompt); } catch (e) {
-        lastErr = /** @type {Error} */(e);
-        setStatus(`Mistral failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
-      }
-    }
-    if (CFG.groqKey && !groqNetworkBlocked) {
-      try { return await callGroq(textPrompt); } catch (e) {
-        lastErr = /** @type {Error} */(e);
-        if (/** @type {Error} */(e).message.includes('[403]')) {
+
+    let geminiErr = /** @type {Error|null} */(null);
+    let lastErr   = /** @type {Error|null} */(null);
+    for (const p of ordered) {
+      if (!p.available) continue;
+      try {
+        const result = await p.run();
+        _lastSuccessfulProvider = p.name;
+        return result;
+      } catch (e) {
+        const err = /** @type {Error} */(e);
+        if (p.name === 'Gemini') geminiErr = err;
+        lastErr = err;
+        if (p.name === 'Groq' && err.message.includes('[403]')) {
           groqNetworkBlocked = true;
           setStatus('Groq blocked by network (403) — skipping for this session…', '#ffb060');
         } else {
-          setStatus(`Groq failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
+          setStatus(`${p.name} failed (${err.message.slice(0, 60)}) — trying next…`, '#ffb060');
         }
       }
-    }
-    if (CFG.cloudflareAccountId && CFG.cloudflareKey) {
-      try { return await callCloudflare(textPrompt); } catch (e) {
-        lastErr = /** @type {Error} */(e);
-        setStatus(`Cloudflare failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
-      }
-    }
-    if (CFG.ollamaEnabled) {
-      try { return await callOllama(textPrompt); } catch (e) {
-        lastErr = /** @type {Error} */(e);
-        setStatus(`Ollama failed (${lastErr.message.slice(0, 60)}) — trying next…`, '#ffb060');
-      }
-    }
-    if (CFG.hfKey) {
-      return callHuggingFace(textPrompt);
     }
     if (lastErr) {
       // When a cascade happened, append the Gemini error so the user sees why their primary provider failed
@@ -2474,12 +2485,26 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     }
   }
 
+  // Hard ceiling on AI-powered rewrites per feedback, regardless of provider cost/health —
+  // each rewrite is a full callAI cascade attempt; an unusually phrase-heavy response (a
+  // weaker fallback model is more prone to this, which compounds badly since it's also more
+  // likely to be the one doing the rewriting) could otherwise burn an unbounded number of
+  // provider calls fixing wording. Past this cap, just drop the violating sentences — the
+  // existing, zero-cost fallback — rather than keep spending calls on phrasing.
+  const MAX_BANNED_PHRASE_REWRITES = 3;
+
   async function stripBannedPhrases(/** @type {string} */ feedback) {
     if (!feedback) return feedback;
     const kept = [];
+    let rewriteCount = 0;
     for (const sentence of splitSentences(feedback)) {
       const hit = BANNED_PHRASE_SIGNALS.find(p => p.test(sentence));
       if (!hit) { kept.push(sentence); continue; }
+      if (rewriteCount >= MAX_BANNED_PHRASE_REWRITES) {
+        console.warn('[MAG] Dropped feedback sentence (rewrite cap reached for this feedback):', sentence);
+        continue;
+      }
+      rewriteCount++;
       console.warn('[MAG] Feedback sentence hit banned phrase / third-person voice — attempting rewrite:', sentence, '| matched:', hit);
       const rewritten = await rewriteBannedSentence(sentence);
       if (rewritten) kept.push(rewritten);
@@ -5023,7 +5048,10 @@ ${checkInstructions}`;
             const _msg = /** @type {Error} */(_gradeErr).message || '';
             const _transient = _attempt === 0
               && /429|503|502|504|rate.?limit|timeout|network|ECONNRESET/i.test(_msg)
-              && !/not configured|No AI provider/i.test(_msg);
+              // Quota/allocation exhaustion matches the 429/503 pattern above but waiting
+              // 3 seconds can never fix it — retrying just doubles the wasted calls to every
+              // provider in the cascade for no chance of success.
+              && !/not configured|No AI provider|daily free allocation|quota|RESOURCE_EXHAUSTED|insufficient_quota/i.test(_msg);
             if (!_transient) throw _gradeErr;
             setStatus(`Transient error — retrying ${student.name} in 3 s…`, '#ffb060');
             setGradeProgressIndeterminate(student.uid, 'Retrying after a transient error…');
