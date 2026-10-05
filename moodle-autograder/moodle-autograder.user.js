@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.41
+// @version      2.6.42
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -1567,7 +1567,9 @@ FORBIDDEN in "feedback":
 - No bullet points, headers, or markdown of any kind.
 - No sign-off or motivational closer of any kind. This means zero encouragement sentences at the end: no "Keep it up", "Good luck", "Best of luck", "Keep up the good work", "Keep that up in future projects", "Looking forward to seeing your next submission", "Hope this helps", "You're on the right track", "Great start", "Keep pushing", "You've got this", or any variant. End on the last piece of actionable feedback. Do not add a warm send-off.
 - Don't mention AI, this tool, or anything about how this comment was written.
-- Never mention resubmitting, resubmission, submitting again, revising and resubmitting, or any other suggestion that this work could be redone or the grade isn't final. The grade is final — critique the work as it stands, but never imply there's a path to change it.`;
+- Never mention resubmitting, resubmission, submitting again, revising and resubmitting, or any other suggestion that this work could be redone or the grade isn't final. The grade is final — critique the work as it stands, but never imply there's a path to change it.
+
+FINAL CHECK before you respond: (1) no em-dashes, backticks, or any phrase from the BANNED CHARACTERS AND PHRASES list above, anywhere in "feedback" — re-read what you're about to write and swap out any that slipped in; (2) your entire response is the raw JSON object and nothing else — no markdown fences, no prose before or after it.`;
   }
 
   function buildFeedbackPrompt(title, instructions, rubric, submissionText, scores, instructorName, style) {
@@ -1822,7 +1824,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
       for (let attempt = 1; attempt <= 2; attempt++) {
         const body = JSON.stringify({
           model, messages: [{ role: 'user', content: promptText }],
-          max_tokens: 2048, temperature: 0.3,
+          max_tokens: 3072, temperature: 0.3,
         });
         const r = await xhr('POST', OPENROUTER_ENDPOINT, { headers, body });
         if (r.status === 0) throw new Error('OpenRouter: request blocked (status 0) — check @connect permission');
@@ -1885,7 +1887,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     const body = JSON.stringify({
       model:       CFG.groqModel,
       messages:    [{ role: 'user', content: promptText }],
-      max_tokens:  2048,
+      max_tokens:  3072,
       temperature: 0.3,
     });
     const r = await xhr('POST', GROQ_ENDPOINT, {
@@ -1911,7 +1913,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     const body = JSON.stringify({
       model:       CFG.mistralModel,
       messages:    [{ role: 'user', content: promptText }],
-      max_tokens:  2048,
+      max_tokens:  3072,
       temperature: 0.3,
     });
     const r = await xhr('POST', MISTRAL_ENDPOINT, {
@@ -1939,7 +1941,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     if (!acct || !key) throw new Error('Cloudflare account ID / API token not configured.');
     const body = JSON.stringify({
       messages:    [{ role: 'user', content: promptText }],
-      max_tokens:  2048,
+      max_tokens:  3072,
       temperature: 0.3,
     });
     const r = await xhr('POST', CLOUDFLARE_ENDPOINT(acct, CFG.cloudflareModel), {
@@ -1969,7 +1971,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     const body = JSON.stringify({
       model: CFG.ollamaModel,
       messages: [{ role: 'user', content: promptText }],
-      max_tokens: 2048,
+      max_tokens: 3072,
       temperature: 0.3,
       stream: false,
     });
