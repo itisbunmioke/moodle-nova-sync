@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.36
+// @version      2.6.37
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -113,6 +113,21 @@
     const live = document.querySelector('[data-assignmentid]')?.getAttribute('data-assignmentid') || null;
     if (live) _cachedAssignDbId = live;
     return live || _cachedAssignDbId;
+  }
+
+  // Returns the CURRENT logged-in user's id (the grader running this script) — needed for
+  // core_files_upload's contextlevel=user/instanceid, which is the uploading user's own
+  // context, not the student being graded. Moodle doesn't expose this via M.cfg (by design),
+  // so this falls back to the usermenu's own profile link, scoped narrowly to avoid matching
+  // a student's profile link elsewhere on a grading page.
+  let _cachedCurrentUserId = /** @type {string|null} */ (null);
+  function getCurrentUserId() {
+    const link = document.querySelector(
+      '.usermenu a[href*="/user/profile.php"], [data-region="usermenu"] a[href*="/user/profile.php"]'
+    );
+    const live = link ? new URL(/** @type {HTMLAnchorElement} */(link).href).searchParams.get('id') : null;
+    if (live) _cachedCurrentUserId = live;
+    return live || _cachedCurrentUserId;
   }
 
   // Tracks setTimeout IDs created by applyResultToLiveDom and the Grade One 2-second re-apply.
@@ -397,6 +412,70 @@
       throw new Error(msg);
     }
     return parsed[0].data;
+  }
+
+  // Rewrites a feedback HTML string's inline base64 <img> tags into real draftfile.php URLs
+  // by uploading each image into the SAME draft file area the feedback text is about to be
+  // submitted under (itemid, read from the live form's assignfeedbackcomments_editor[itemid]
+  // hidden input).
+  //
+  // Confirmed via a captured real payload (2026-10-05) from Moodle's OWN native paste-image
+  // flow, which DOES survive a save+reload: the submitted text references the image as
+  // https://<host>/draftfile.php/<contextid>/user/draft/<itemid>/<filename> — a normal,
+  // well-formed same-origin URL — NOT the @@PLUGINFILE@@ placeholder (that only resolves for
+  // files already in PERMANENT storage; mid-submission, while the file is still in the draft
+  // area, it has no meaning and gets stripped by the same sanitizer that strips data: URIs —
+  // this is why the v2.6.35 @@PLUGINFILE@@ attempt produced the identical "stripped, blank
+  // space" symptom as plain inline base64). The real mod_assign_submit_grading_form web
+  // service call (already used by postGrade) correctly transfers a draft file referenced this
+  // way into permanent storage on save — the save mechanism was never the problem.
+  //
+  // Best-effort and defensive: if upload fails for ANY image (API disabled on this install,
+  // wrong itemid/userid, network error), the ENTIRE feedback string is returned UNCHANGED
+  // (today's base64 behavior) rather than risk a partially-converted, broken result.
+  async function uploadFeedbackImages(/** @type {string} */ feedbackHtml, /** @type {string|null} */ itemid) {
+    const IMG_RE = /<img\s+[^>]*src="data:image\/(\w+);base64,([A-Za-z0-9+/=]+)"[^>]*>/g;
+    const matches = [...feedbackHtml.matchAll(IMG_RE)];
+    if (!matches.length) return feedbackHtml;
+    if (!itemid) { console.warn('[MAG] uploadFeedbackImages: no draft itemid found on form — leaving images inline.'); return feedbackHtml; }
+    const userId = getCurrentUserId();
+    if (!userId) { console.warn('[MAG] uploadFeedbackImages: could not determine current user id — leaving images inline.'); return feedbackHtml; }
+
+    let rewritten = feedbackHtml;
+    for (let i = 0; i < matches.length; i++) {
+      const [fullTag, ext, base64] = matches[i];
+      const filename = `mag-feedback-img-${Date.now()}-${i}.${ext === 'jpeg' ? 'jpg' : ext}`;
+      try {
+        const fileInfo = await moodleAjax('core_files_upload', {
+          contextlevel: 'user',
+          instanceid:   parseInt(userId),
+          component:    'user',
+          filearea:     'draft',
+          itemid:       parseInt(itemid),
+          filepath:     '/',
+          filename,
+          filecontent:  base64,
+        });
+        console.log('[MAG] core_files_upload response:', JSON.stringify(fileInfo));
+        // Prefer whatever URL/contextid Moodle's own response gives us over constructing one
+        // blind — the response shape is the ground truth, this format is our best guess at it.
+        const url = fileInfo?.url
+          || (fileInfo?.contextid
+                ? `${location.origin}/draftfile.php/${fileInfo.contextid}/user/draft/${itemid}/${encodeURIComponent(filename)}`
+                : null);
+        if (!url) {
+          console.warn('[MAG] uploadFeedbackImages: upload succeeded but no usable URL in response — leaving all feedback images inline as base64.');
+          return feedbackHtml;
+        }
+        const newTag = fullTag.replace(/src="data:[^"]*"/, `src="${url}"`);
+        rewritten = rewritten.replace(fullTag, newTag);
+        console.log('[MAG] Uploaded feedback image, referenced as', url);
+      } catch (err) {
+        console.warn('[MAG] uploadFeedbackImages: upload failed for image', i, '—', /** @type {Error} */(err).message, '— leaving all feedback images inline as base64.');
+        return feedbackHtml; // all-or-nothing: don't submit a half-converted mix
+      }
+    }
+    return rewritten;
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -2665,37 +2744,37 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     console.log('[MAG] rubric levels set:', rubricFieldsSet, '/ ', rubric?.length);
 
     // 5. Feedback (omitted when user has unchecked "Post feedback" in review panel)
-    const feedbackHasImage = /<img\s+[^>]*src="data:image\//.test(result.feedback || '');
     if (CFG.postFeedback) {
-      fd.set('assignfeedbackcomments_editor[text]',   result.feedback || '');
+      // Convert any pasted base64 images to real draftfile.php URLs before submitting — see
+      // uploadFeedbackImages for why (confirmed against a captured real Moodle payload) a
+      // data: URI or an @@PLUGINFILE@@ placeholder both get stripped mid-submission, while
+      // this URL form survives. Uses the SAME form's own draft itemid, so the upload and the
+      // text that references it land in the same draft area.
+      const feedbackItemId = form.querySelector('input[name="assignfeedbackcomments_editor[itemid]"]')?.value || null;
+      const feedbackHtml   = await uploadFeedbackImages(result.feedback || '', feedbackItemId);
+      fd.set('assignfeedbackcomments_editor[text]',   feedbackHtml);
       fd.set('assignfeedbackcomments_editor[format]', '1');
     }
 
     const bodyStr = fdToBody(fd);
     setStatus(`Posting grade for ${student.name}…`, '#c9a0ff');
 
-    // 6. Try the web service first (works on some Moodle installs) — EXCEPT when the
-    //    feedback has a pasted image still embedded as inline base64. Console evidence
-    //    (v2.6.35 attempt) showed the web-service path either strips that image outright or
-    //    — when rewritten to a Moodle @@PLUGINFILE@@ draft-file reference instead — never
-    //    actually resolves it (the file never gets moved out of the draft area, since this
-    //    web service doesn't appear to run the server-side draft-to-permanent transfer a
-    //    real form submission would), leaving a broken image after a reload either way. The
-    //    plain form POST below is the path this always worked through before — go straight
-    //    there for an image-containing feedback rather than risk the web service losing it.
+    // 6. Try the web service first (works on some Moodle installs). Confirmed via a captured
+    //    real payload (2026-10-05) that this exact web service is what Moodle's OWN native
+    //    "Save changes" uses too, and it correctly persists an embedded image when referenced
+    //    as a real draftfile.php URL — the earlier image-loss bug was the reference FORMAT,
+    //    not this save path, so there's no reason to avoid it for image-containing feedback.
     //    Moodle 4.x AMD passes jsonformdata as JSON.stringify(urlEncodedString).
-    if (!feedbackHasImage) {
-      try {
-        await moodleAjax('mod_assign_submit_grading_form', {
-          assignmentid:  parseInt(assignDbId),
-          userid:        parseInt(student.uid),
-          attemptnumber: -1,
-          jsonformdata:  JSON.stringify(bodyStr),
-        });
-        return true;
-      } catch {
-        // Web service not available on this Moodle — form POST fallback below
-      }
+    try {
+      await moodleAjax('mod_assign_submit_grading_form', {
+        assignmentid:  parseInt(assignDbId),
+        userid:        parseInt(student.uid),
+        attemptnumber: -1,
+        jsonformdata:  JSON.stringify(bodyStr),
+      });
+      return true;
+    } catch {
+      // Web service not available on this Moodle — form POST fallback below
     }
 
     // 7. Fallback: traditional form POST (view.php?action=submitgrade in body).
