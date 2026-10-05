@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.38
+// @version      2.6.39
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -117,19 +117,31 @@
 
   // Returns the CURRENT logged-in user's id (the grader running this script) — needed for
   // core_files_upload's contextlevel=user/instanceid, which is the uploading user's own
-  // context, not the student being graded. DOM-scraping a usermenu profile link (tried first)
-  // came up empty — this theme apparently builds its user menu on demand rather than rendering
-  // it into the static page — so this instead calls Moodle's own standard, always-available
-  // core_webservice_get_site_info AJAX function, which returns the authenticated session's
-  // userid directly. Cached after the first successful call (it can't change mid-session).
+  // context, not the student being graded. Two prior approaches both failed on this install:
+  // DOM-scraping a usermenu profile link came up empty (this theme builds its user menu on
+  // demand), and core_webservice_get_site_info isn't in this site's enabled AJAX function
+  // allowlist (an admin setting, confirmed via its own explicit "service not available" error
+  // — not ambiguous). This instead fetches /user/profile.php with NO id param — Moodle renders
+  // that as the viewer's OWN profile, no web service needed — then reads the id back from
+  // either a redirect (if one occurs) or a self-referencing "edit profile" link on that page
+  // (only the profile's owner sees their own edit link). Cached after the first success.
   let _cachedCurrentUserId = /** @type {string|null} */ (null);
   async function getCurrentUserId() {
     if (_cachedCurrentUserId) return _cachedCurrentUserId;
     try {
-      const info = await moodleAjax('core_webservice_get_site_info', {});
-      if (info?.userid) _cachedCurrentUserId = String(info.userid);
+      const r = await xhr('GET', `${location.origin}/user/profile.php`);
+      let m = (r.finalUrl || '').match(/[?&]id=(\d+)/);
+      if (!m) {
+        const doc = new DOMParser().parseFromString(r.responseText, 'text/html');
+        const link = doc.querySelector(
+          'a[href*="/user/edit.php?id="], a[href*="/user/editadvanced.php?id="], a[href*="/user/preferences.php?userid="]'
+        );
+        if (link) m = (link.getAttribute('href') || '').match(/(?:[?&]id=|userid=)(\d+)/);
+      }
+      if (m) _cachedCurrentUserId = m[1];
+      else console.warn('[MAG] getCurrentUserId: no userid found in /user/profile.php response.');
     } catch (err) {
-      console.warn('[MAG] getCurrentUserId: core_webservice_get_site_info failed —', /** @type {Error} */(err).message);
+      console.warn('[MAG] getCurrentUserId: /user/profile.php fetch failed —', /** @type {Error} */(err).message);
     }
     return _cachedCurrentUserId;
   }
