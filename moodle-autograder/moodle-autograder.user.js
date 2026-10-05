@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.37
+// @version      2.6.38
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -117,17 +117,21 @@
 
   // Returns the CURRENT logged-in user's id (the grader running this script) — needed for
   // core_files_upload's contextlevel=user/instanceid, which is the uploading user's own
-  // context, not the student being graded. Moodle doesn't expose this via M.cfg (by design),
-  // so this falls back to the usermenu's own profile link, scoped narrowly to avoid matching
-  // a student's profile link elsewhere on a grading page.
+  // context, not the student being graded. DOM-scraping a usermenu profile link (tried first)
+  // came up empty — this theme apparently builds its user menu on demand rather than rendering
+  // it into the static page — so this instead calls Moodle's own standard, always-available
+  // core_webservice_get_site_info AJAX function, which returns the authenticated session's
+  // userid directly. Cached after the first successful call (it can't change mid-session).
   let _cachedCurrentUserId = /** @type {string|null} */ (null);
-  function getCurrentUserId() {
-    const link = document.querySelector(
-      '.usermenu a[href*="/user/profile.php"], [data-region="usermenu"] a[href*="/user/profile.php"]'
-    );
-    const live = link ? new URL(/** @type {HTMLAnchorElement} */(link).href).searchParams.get('id') : null;
-    if (live) _cachedCurrentUserId = live;
-    return live || _cachedCurrentUserId;
+  async function getCurrentUserId() {
+    if (_cachedCurrentUserId) return _cachedCurrentUserId;
+    try {
+      const info = await moodleAjax('core_webservice_get_site_info', {});
+      if (info?.userid) _cachedCurrentUserId = String(info.userid);
+    } catch (err) {
+      console.warn('[MAG] getCurrentUserId: core_webservice_get_site_info failed —', /** @type {Error} */(err).message);
+    }
+    return _cachedCurrentUserId;
   }
 
   // Tracks setTimeout IDs created by applyResultToLiveDom and the Grade One 2-second re-apply.
@@ -438,7 +442,7 @@
     const matches = [...feedbackHtml.matchAll(IMG_RE)];
     if (!matches.length) return feedbackHtml;
     if (!itemid) { console.warn('[MAG] uploadFeedbackImages: no draft itemid found on form — leaving images inline.'); return feedbackHtml; }
-    const userId = getCurrentUserId();
+    const userId = await getCurrentUserId();
     if (!userId) { console.warn('[MAG] uploadFeedbackImages: could not determine current user id — leaving images inline.'); return feedbackHtml; }
 
     let rewritten = feedbackHtml;
