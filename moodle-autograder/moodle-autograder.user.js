@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.42
+// @version      2.6.43
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2803,7 +2803,6 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       await moodleAjax('mod_assign_submit_grading_form', {
         assignmentid:  parseInt(assignDbId),
         userid:        parseInt(student.uid),
-        attemptnumber: -1,
         jsonformdata:  JSON.stringify(bodyStr),
       });
       return true;
