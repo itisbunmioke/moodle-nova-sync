@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.45
+// @version      2.6.46
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -4455,13 +4455,17 @@ ${checkInstructions}`;
         );
         let editedFeedback;
         if (imgEls.length > 0) {
-          const textHtml = rawText
-            ? '<p>' + rawText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>'
-            : '';
+          // rawText is fbEl.innerHTML — ALREADY real HTML (the card's initial render already
+          // wrapped it in <p> tags; contenteditable only ever stores markup, never plain text
+          // with literal \n's). Wrapping it in another <p> here produced invalid nested
+          // <p><p>...</p></p> markup whenever an image was also present — browsers silently
+          // auto-correct that (why the live preview always looked fine), but Moodle's
+          // server-side sanitizer does not, and was dropping content because of it. Use it
+          // as-is; no paragraph-wrapping needed, or wanted, for content that's already HTML.
           const imgHtml  = Array.from(imgEls).map(im =>
             `<p><img src="${im.src}" style="max-width:${im.style.width||'400px'};height:auto"></p>`
           ).join('');
-          editedFeedback = textHtml + imgHtml;
+          editedFeedback = rawText + imgHtml;
         } else {
           editedFeedback = rawText;
         }
