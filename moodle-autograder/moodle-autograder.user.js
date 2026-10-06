@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.44
+// @version      2.6.45
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2790,6 +2790,13 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       const feedbackHtml   = await uploadFeedbackImages(result.feedback || '', feedbackItemId);
       fd.set('assignfeedbackcomments_editor[text]',   feedbackHtml);
       fd.set('assignfeedbackcomments_editor[format]', '1');
+      // Diagnostic: confirm the itemid actually being SUBMITTED (fd.set above never touches
+      // [itemid] itself — it's only ever fd-seeded from the form) matches the one the image
+      // was just uploaded into, and show exactly what text is being submitted for this field.
+      console.log('[MAG] Feedback editor fields being submitted:',
+        'itemid(seeded)=', fd.get('assignfeedbackcomments_editor[itemid]'),
+        '| itemid(used for upload)=', feedbackItemId,
+        '| text=', feedbackHtml.slice(0, 400));
     }
 
     const bodyStr = fdToBody(fd);
