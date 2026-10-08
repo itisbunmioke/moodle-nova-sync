@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.50
+// @version      2.6.51
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2429,6 +2429,12 @@ Your response is the JSON object described above, and nothing else. Do not expla
   // "robust" carry a narrow exception for their legitimate statistics/ML meaning
   // ("statistically significant", "robust to outliers", "RobustScaler") since this list is
   // now enforced mechanically instead of being left to the model's judgment.
+  // Named separately (not inline in the array below) so stripBannedPhrases can recognize it
+  // and skip straight to dropping the sentence — every real-world instance of this one has
+  // been low-value generic filler (see its own comment below), never worth spending an AI
+  // rewrite call to salvage, unlike the other entries where the surrounding sentence is often
+  // genuinely substantive and worth keeping in a rephrased form.
+  const EDGE_CASE_RE = /\bedge cases?\b/i;
   const BANNED_PHRASE_SIGNALS = [
     /\bdemonstrat\w*\b/i, /\bshowcas\w*\b/i, /\bcommendable\b/i, /\bproficien\w*\b/i,
     /\bexhibit\w*\b/i, /\bfurthermore\b/i, /\badditionally\b/i, /\bin conclusion\b/i,
@@ -2459,7 +2465,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     // term itself instead. A genuinely specific, well-grounded point can always be made without
     // it (name the actual scenario — "a zero-length input", "a negative value" — instead of the
     // word "edge case"), which is more concrete writing anyway, not a loss.
-    /\bedge cases?\b/i,
+    EDGE_CASE_RE,
     // DIRECT ADDRESS — third-person references to the student instead of "you"/"your".
     /\bthe student'?s?\b/i, /\bthis student'?s?\b/i,
   ];
@@ -2514,6 +2520,11 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     for (const sentence of splitSentences(feedback)) {
       const hit = BANNED_PHRASE_SIGNALS.find(p => p.test(sentence));
       if (!hit) { kept.push(sentence); continue; }
+      if (hit === EDGE_CASE_RE) {
+        // Zero-cost drop, no AI rewrite attempt — see EDGE_CASE_RE's own comment for why.
+        console.warn('[MAG] Dropped feedback sentence ("edge case" filler, no rewrite attempted):', sentence);
+        continue;
+      }
       if (rewriteCount >= MAX_BANNED_PHRASE_REWRITES) {
         console.warn('[MAG] Dropped feedback sentence (rewrite cap reached for this feedback):', sentence);
         continue;
