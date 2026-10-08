@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.47
+// @version      2.6.48
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2450,6 +2450,18 @@ Your response is the JSON object described above, and nothing else. Do not expla
     /\bin essence\b/i, /\bgoing forward\b/i, /\btake ?away\b/i, /\ba testament to\b/i,
     /\bspeaks to\b/i, /\bspeaks volumes\b/i, /\bon that note\b/i, /\bwith that said\b/i,
     /\bhaving said that\b/i, /\bneedless to say\b/i, /\bby and large\b/i, /\brest assured\b/i,
+    // Hedged "did you test edge cases" filler — removing the literal prompt example that
+    // caused this (v2.6.44) wasn't enough; weaker fallback models kept reaching for the same
+    // generic hedge anyway. Mechanical backstop instead of relying on the model remembering a
+    // rule: ban "edge case(s)" appearing in the SAME sentence as an uncertainty marker (NOT
+    // "whether" alone — that word also shows up in genuine, specific critiques like "doesn't
+    // check whether the list is empty", which must stay allowed). A confident, specific claim
+    // ("this crashes on an empty list") is unaffected — only the vague "not clear/not sure/
+    // can't tell [whether] you tested edge cases" shape is banned.
+    /(?=.*\bedge cases?\b)(?=.*\b(?:not(?: totally| entirely)? clear|unclear|not sure|uncertain|hard to (?:tell|say|know)|can'?t tell|don'?t know)\b)/i,
+    // Same filler as a bare rhetorical question instead of a hedge statement — "Did you test
+    // this with edge cases?" / "Have you tested for edge cases?" — equally generic, equally banned.
+    /\b(?:did|have|has|do|does) you(?:r code)? (?:test(?:ed)?|consider(?:ed)?|handle[sd]?|account(?:ed)? for)\b[^.!?]*\bedge cases?\b/i,
     // DIRECT ADDRESS — third-person references to the student instead of "you"/"your".
     /\bthe student'?s?\b/i, /\bthis student'?s?\b/i,
   ];
