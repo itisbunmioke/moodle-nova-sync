@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.51
+// @version      2.6.52
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2435,6 +2435,13 @@ Your response is the JSON object described above, and nothing else. Do not expla
   // rewrite call to salvage, unlike the other entries where the surrounding sentence is often
   // genuinely substantive and worth keeping in a rephrased form.
   const EDGE_CASE_RE = /\bedge cases?\b/i;
+  // "Seems/appears to work (correctly/as expected/fine/well)" — the positive-affirmation
+  // mirror of the edge-case hedge: a confidence-sounding claim with zero concrete content
+  // (what specifically works? what was actually checked?). Deliberately only the HEDGED form
+  // ("seems"/"appears") — "works correctly" alone, without the hedge, is fine when paired
+  // with a real specific detail ("works correctly, generating values in the 0-100 range").
+  // The hedge word is the tell that nothing was actually verified.
+  const WORKS_AS_EXPECTED_RE = /\b(?:seems?|appears?) to work(?: correctly| as expected| fine| well)?\b/i;
   const BANNED_PHRASE_SIGNALS = [
     /\bdemonstrat\w*\b/i, /\bshowcas\w*\b/i, /\bcommendable\b/i, /\bproficien\w*\b/i,
     /\bexhibit\w*\b/i, /\bfurthermore\b/i, /\badditionally\b/i, /\bin conclusion\b/i,
@@ -2465,7 +2472,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     // term itself instead. A genuinely specific, well-grounded point can always be made without
     // it (name the actual scenario — "a zero-length input", "a negative value" — instead of the
     // word "edge case"), which is more concrete writing anyway, not a loss.
-    EDGE_CASE_RE,
+    EDGE_CASE_RE, WORKS_AS_EXPECTED_RE,
     // DIRECT ADDRESS — third-person references to the student instead of "you"/"your".
     /\bthe student'?s?\b/i, /\bthis student'?s?\b/i,
   ];
@@ -2520,9 +2527,9 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
     for (const sentence of splitSentences(feedback)) {
       const hit = BANNED_PHRASE_SIGNALS.find(p => p.test(sentence));
       if (!hit) { kept.push(sentence); continue; }
-      if (hit === EDGE_CASE_RE) {
-        // Zero-cost drop, no AI rewrite attempt — see EDGE_CASE_RE's own comment for why.
-        console.warn('[MAG] Dropped feedback sentence ("edge case" filler, no rewrite attempted):', sentence);
+      if (hit === EDGE_CASE_RE || hit === WORKS_AS_EXPECTED_RE) {
+        // Zero-cost drop, no AI rewrite attempt — see each const's own comment for why.
+        console.warn('[MAG] Dropped feedback sentence (generic filler, no rewrite attempted):', sentence);
         continue;
       }
       if (rewriteCount >= MAX_BANNED_PHRASE_REWRITES) {
