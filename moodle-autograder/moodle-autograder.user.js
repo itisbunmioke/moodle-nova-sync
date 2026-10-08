@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.46
+// @version      2.6.47
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2787,7 +2787,14 @@ Respond with ONLY the rewritten sentence. No quotes, no explanation, no markdown
       // this URL form survives. Uses the SAME form's own draft itemid, so the upload and the
       // text that references it land in the same draft area.
       const feedbackItemId = form.querySelector('input[name="assignfeedbackcomments_editor[itemid]"]')?.value || null;
-      const feedbackHtml   = await uploadFeedbackImages(result.feedback || '', feedbackItemId);
+      const originalFeedback = result.feedback || '';
+      const feedbackHtml   = await uploadFeedbackImages(originalFeedback, feedbackItemId);
+      // If an upload actually happened (text changed), give the server a moment before
+      // submitting the grade that references it — a payload-level comparison against a
+      // captured native submission found no content difference, so the remaining plausible
+      // explanation is a timing race between the upload being visible and the immediately
+      // following submission querying for it.
+      if (feedbackHtml !== originalFeedback) await sleep(800);
       fd.set('assignfeedbackcomments_editor[text]',   feedbackHtml);
       fd.set('assignfeedbackcomments_editor[format]', '1');
       // Diagnostic: confirm the itemid actually being SUBMITTED (fd.set above never touches
