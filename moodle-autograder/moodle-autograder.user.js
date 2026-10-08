@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle AutoGrader
 // @namespace    moodle-autograder
-// @version      2.6.48
+// @version      2.6.49
 // @description  AI-powered grading assistant — reads rubric, reviews submissions, grades and posts feedback.
 // @author       Bunmi Oke
 // @updateURL    https://raw.githubusercontent.com/itisbunmioke/moodle-nova-sync/master/moodle-autograder/moodle-autograder.user.js
@@ -2458,7 +2458,7 @@ Your response is the JSON object described above, and nothing else. Do not expla
     // check whether the list is empty", which must stay allowed). A confident, specific claim
     // ("this crashes on an empty list") is unaffected — only the vague "not clear/not sure/
     // can't tell [whether] you tested edge cases" shape is banned.
-    /(?=.*\bedge cases?\b)(?=.*\b(?:not(?: totally| entirely)? clear|unclear|not sure|uncertain|hard to (?:tell|say|know)|can'?t tell|don'?t know)\b)/i,
+    /(?=.*\bedge cases?\b)(?=.*\b(?:not(?: totally| entirely)? clear|unclear|not sure|uncertain|hard to (?:tell|say|know)|can'?t tell|don'?t know|may (?:not )?have|might (?:not )?have|may or may not|possibly (?:did|didn'?t)|probably (?:did|didn'?t))\b)/i,
     // Same filler as a bare rhetorical question instead of a hedge statement — "Did you test
     // this with edge cases?" / "Have you tested for edge cases?" — equally generic, equally banned.
     /\b(?:did|have|has|do|does) you(?:r code)? (?:test(?:ed)?|consider(?:ed)?|handle[sd]?|account(?:ed)? for)\b[^.!?]*\bedge cases?\b/i,
