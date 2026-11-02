@@ -14,7 +14,7 @@
 4. [Individual Installation (Per-User)](#4-individual-installation-per-user)
 5. [Centrally Managed Installation (IT Department)](#5-centrally-managed-installation-it-department)
 6. [First-Time Configuration](#6-first-time-configuration)
-7. [Advanced Configuration (Nova Table Layout)](#7-advanced-configuration-nova-table-layout)
+7. [Nova Table Layout](#7-nova-table-layout)
 8. [Instructor Workflow](#8-instructor-workflow)
 9. [Troubleshooting](#9-troubleshooting)
 10. [Updating the Extension](#10-updating-the-extension)
@@ -190,16 +190,9 @@ Click **Save Settings**. The confirmation banner confirms the save. Reload any o
 
 ---
 
-## 7. Advanced Configuration (Nova Table Layout)
+## 7. Nova Table Layout
 
-These settings only need to change if grades are not being detected correctly on Nova. The defaults match Willis College's Nova installation.
-
-| Field | Default | Meaning |
-|-------|---------|---------|
-| Fixed column count | `5` | Number of non-student columns before the student columns in Nova's grade table |
-| Assessment name column index | `1` | Which column (zero-indexed) holds the assessment/row name |
-
-If the Nova page layout changes after a Nova software update and grades stop filling, adjust these values. Open the Nova grade-entry page → press F12 → Elements tab → inspect the grade table structure to count columns.
+No configuration is needed. The extension finds the grade table from its header row (`Assessment`, `Type`, `Weight`, `Total Points`, followed by one column per student). If Nova renames those headers, the Nova bar will show no rows and the console (F12) will log a parse warning.
 
 ---
 

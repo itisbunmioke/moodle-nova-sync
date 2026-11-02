@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Moodle → Nova Grade Sync",
-  "version": "4.7.0",
+  "version": "4.7.1",
   "description": "Captures grades from the Moodle gradebook and fills them into Nova grade entry — no copy-paste needed.",
 
   "permissions": ["storage"],

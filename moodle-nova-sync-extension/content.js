@@ -31,8 +31,6 @@
   const cfg = await chrome.storage.sync.get({
     moodleHost:     'students.willisonline.ca',
     novaHost:       'nova.williscollege.ca',
-    fixedColCount:  5,
-    assessmentCell: 1,
     courseMappings: {},
   });
 
@@ -330,9 +328,7 @@
 
     const SEL = {
       table:          'table',
-      fixedColCount:  cfg.fixedColCount,
-      assessmentCell: cfg.assessmentCell,
-      gradeInput:     'input',
+      gradeInput:     'input.mark-entry, input[type="text"]',
       fuzzyTolerance: 2,
     };
 
@@ -578,7 +574,7 @@
       if (!p) return;
       p.assessmentRows.forEach(row => {
         p.studentCols.forEach(col => {
-          const inp = row.cells[col.colIndex] && row.cells[col.colIndex].querySelector(SEL.gradeInput);
+          const inp = gradeInputFor(row, col);
           if (!inp) return;
           if (inp.value.trim() === '') inp.classList.add('mns-empty-cell');
           else inp.classList.remove('mns-empty-cell');
@@ -814,36 +810,66 @@
       return matchActivity(novaRow, activities);
     }
 
+    // Nova's marks grid, one block per subject (All Subjects can show several):
+    //   [subject title — one cell spanning the table]
+    //   Assessment | Type | Weight | Total Points | [students...]
+    //   [one row per assessment — withdrawn students have plain text, not an input]
+    // Columns come from each header row's labels, and are kept per block so a student
+    // is never resolved through another block's column.
     function parseTable() {
-      const tables = document.querySelectorAll(SEL.table);
-      let table = null;
-      for (const t of tables) {
-        if (!table || t.rows[0]?.cells.length > table.rows[0]?.cells.length)
-          table = t;
-      }
-      if (!table) return null;
-      const rows = Array.from(table.rows);
-      if (rows.length < 2) return null;
-
-      const headerCells = Array.from(rows[0].cells);
       const studentCols = [];
-      for (let i = SEL.fixedColCount; i < headerCells.length; i++) {
-        const name = headerCells[i].textContent.trim();
-        if (name) studentCols.push({ name, colIndex: i, normalizedName: norm(name) });
+      const seenStudents = new Set();
+      const assessmentRows = [];
+
+      for (const table of document.querySelectorAll(SEL.table)) {
+        let course = '';
+        let header = null;
+
+        for (const row of table.rows) {
+          const cells = Array.from(row.cells);
+
+          const title = cells.length === 1 && cells[0].querySelector('.lead');
+          if (title) { course = title.textContent.trim(); continue; }
+
+          const labels = cells.map(c => c.textContent.trim().toLowerCase());
+          const assessmentIdx = labels.indexOf('assessment');
+          const totalPointsIdx = labels.indexOf('total points');
+          if (assessmentIdx !== -1 && totalPointsIdx !== -1) {
+            header = { assessmentIdx, typeIdx: labels.indexOf('type'), cellCount: cells.length, colByStudent: new Map() };
+            for (let i = totalPointsIdx + 1; i < cells.length; i++) {
+              const name = cells[i].textContent.trim();
+              if (!name) continue;
+              const key = cells[i].querySelector('[data-id]')?.dataset.id || norm(name);
+              header.colByStudent.set(key, i);
+              if (!seenStudents.has(key)) {
+                seenStudents.add(key);
+                studentCols.push({ name, key, colIndex: i, normalizedName: norm(name) });
+              }
+            }
+            continue;
+          }
+
+          // Cell count must match the header or student columns would be misaligned.
+          if (!header || cells.length !== header.cellCount) continue;
+          const assessment = cells[header.assessmentIdx].textContent.trim();
+          if (!assessment) continue;
+          if (/\blab\s+(?:activity|assignment)\b/i.test(assessment)) continue;
+          // Rows with no grade inputs are not gradable (e.g. the "Score:" summary row).
+          const hasInput = Array.from(header.colByStudent.values()).some(i => cells[i].querySelector(SEL.gradeInput));
+          if (!hasInput) continue;
+          const type = header.typeIdx !== -1 ? cells[header.typeIdx].textContent.trim() : '';
+          assessmentRows.push({ row, course, assessment, type, cells, colByStudent: header.colByStudent });
+        }
       }
 
-      const assessmentRows = [];
-      for (let r = 1; r < rows.length; r++) {
-        const cells = Array.from(rows[r].cells);
-        if (cells.length < SEL.fixedColCount) continue;
-        const course = cells[0]?.textContent.trim() || '';
-        const assessment = cells[SEL.assessmentCell]?.textContent.trim() || '';
-        const type = cells[2]?.textContent.trim() || '';
-        if (!assessment) continue;
-        if (/\blab\s+(?:activity|assignment)\b/i.test(assessment)) continue;
-        assessmentRows.push({ rowIndex: r, row: rows[r], course, assessment, type, cells });
-      }
-      return { table, studentCols, assessmentRows };
+      if (!studentCols.length || !assessmentRows.length) return null;
+      return { studentCols, assessmentRows };
+    }
+
+    function gradeInputFor(assessmentRow, studentCol) {
+      const colIndex = assessmentRow.colByStudent.get(studentCol.key);
+      if (colIndex === undefined) return null;
+      return assessmentRow.cells[colIndex].querySelector(SEL.gradeInput);
     }
 
     function populateRowSelector(assessmentRows, studentCols) {
@@ -866,7 +892,7 @@
 
     function buildMatches(assessmentRow, studentCols, moodleStudents) {
       return studentCols.map(col => {
-        const input = assessmentRow.cells[col.colIndex]?.querySelector(SEL.gradeInput) || null;
+        const input = gradeInputFor(assessmentRow, col);
         const match = findStudentMatch(col.name, moodleStudents);
         return { novaName: col.name, colIndex: col.colIndex, input, match };
       });
@@ -1258,7 +1284,7 @@
         const actKey = matchActivity(assessmentRow.assessment, activities);
         const studentMatch = actKey ? findStudentMatch(studentCol.name, activities[actKey]) : null;
         const grade = studentMatch?.student.grade || '';
-        const input = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
+        const input = gradeInputFor(assessmentRow, studentCol);
         const existing = input?.value.trim() || '';
         return { assessmentRow, rowIdx, actKey, grade, input, existing };
       }).filter(m => m.actKey);
@@ -1341,7 +1367,7 @@
       const studentCol = parsed.studentCols[stuIdx];
 
       const inputs = parsed.assessmentRows
-        .map(r => r.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput))
+        .map(r => gradeInputFor(r, studentCol))
         .filter(inp => inp && inp.value.trim() !== '');
 
       panel.innerHTML = `
@@ -1499,7 +1525,7 @@
       const allInputs = [];
       for (const assessmentRow of parsed.assessmentRows) {
         for (const studentCol of parsed.studentCols) {
-          const inp = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
+          const inp = gradeInputFor(assessmentRow, studentCol);
           if (inp && inp.value.trim() !== '') allInputs.push(inp);
         }
       }

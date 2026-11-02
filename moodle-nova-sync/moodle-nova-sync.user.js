@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle → Nova Grade Sync
 // @namespace    moodle-nova-sync
-// @version      4.9.4
+// @version      4.10.1
 // @description  Captures grades from Moodle gradebook and pastes them into Nova grade entry. Configure the hostnames below before installing.
 // @author       moodle-nova-sync
 // @match        *://*/*
@@ -29,15 +29,6 @@
   // Nova hostname — the part after https:// in your Nova grade-entry URL.
   // Example: 'nova.yourcollege.edu'
   const NOVA_HOST = 'nova.williscollege.ca';
-
-  // Nova table layout — only change these if student columns or assessment
-  // names are not detected correctly (see F12 console for warnings).
-  //   fixedColCount  : number of non-student columns before student columns start
-  //   assessmentCell : 0-based column index that holds the assessment/row name
-  const NOVA_TABLE = {
-    fixedColCount:  5,   // try 3, 4, or 6 if student columns are not found
-    assessmentCell: 1,   // try 0 or 2 if assessment names are read incorrectly
-  };
 
   // Per-course Nova-row → Moodle-column mapping (optional).
   // For courses where Moodle groups multiple activities into a single Nova row,
@@ -369,9 +360,7 @@
 
     const SEL = {
       table:          'table',
-      fixedColCount:  NOVA_TABLE.fixedColCount,
-      assessmentCell: NOVA_TABLE.assessmentCell,
-      gradeInput:     'input',
+      gradeInput:     'input.mark-entry, input[type="text"]',
       fuzzyTolerance: 2,
     };
 
@@ -538,7 +527,7 @@
       <button class="mns-btn" id="mns-fill-all-btn" disabled title="Fill selected row immediately (no preview panel)">Fill Now</button>
       <span class="mns-sep">|</span>
       <select id="mns-stu-select"><option value="">— student —</option></select>
-      <button class="mns-btn mns-warn" id="mns-fill-stu-btn" disabled title="Fill all activities for selected student">Fill Student</button>
+      <button class="mns-btn mns-warn" id="mns-fill-stu-btn" disabled title="Preview all activities for selected student, then confirm to fill">Preview Student</button>
       <button class="mns-btn mns-danger" id="mns-clear-stu-btn" disabled title="Clear all grades for selected student">Clear Student</button>
       <span class="mns-sep">|</span>
       <button class="mns-btn mns-warn" id="mns-fill-class-btn" disabled title="Fill all matched activities for entire class">Fill All</button>
@@ -619,7 +608,7 @@
       if (!p) return;
       p.assessmentRows.forEach(row => {
         p.studentCols.forEach(col => {
-          const inp = row.cells[col.colIndex] && row.cells[col.colIndex].querySelector(SEL.gradeInput);
+          const inp = gradeInputFor(row, col);
           if (!inp) return;
           if (inp.value.trim() === '') inp.classList.add('mns-empty-cell');
           else inp.classList.remove('mns-empty-cell');
@@ -857,36 +846,66 @@
       return matchActivity(novaRow, activities);
     }
 
+    // Nova's marks grid, one block per subject (All Subjects can show several):
+    //   [subject title — one cell spanning the table]
+    //   Assessment | Type | Weight | Total Points | [students...]
+    //   [one row per assessment — withdrawn students have plain text, not an input]
+    // Columns come from each header row's labels, and are kept per block so a student
+    // is never resolved through another block's column.
     function parseTable() {
-      const tables = document.querySelectorAll(SEL.table);
-      let table = null;
-      for (const t of tables) {
-        if (!table || t.rows[0]?.cells.length > table.rows[0]?.cells.length)
-          table = t;
-      }
-      if (!table) return null;
-      const rows = Array.from(table.rows);
-      if (rows.length < 2) return null;
-
-      const headerCells = Array.from(rows[0].cells);
       const studentCols = [];
-      for (let i = SEL.fixedColCount; i < headerCells.length; i++) {
-        const name = headerCells[i].textContent.trim();
-        if (name) studentCols.push({ name, colIndex: i, normalizedName: norm(name) });
+      const seenStudents = new Set();
+      const assessmentRows = [];
+
+      for (const table of document.querySelectorAll(SEL.table)) {
+        let course = '';
+        let header = null;
+
+        for (const row of table.rows) {
+          const cells = Array.from(row.cells);
+
+          const title = cells.length === 1 && cells[0].querySelector('.lead');
+          if (title) { course = title.textContent.trim(); continue; }
+
+          const labels = cells.map(c => c.textContent.trim().toLowerCase());
+          const assessmentIdx = labels.indexOf('assessment');
+          const totalPointsIdx = labels.indexOf('total points');
+          if (assessmentIdx !== -1 && totalPointsIdx !== -1) {
+            header = { assessmentIdx, typeIdx: labels.indexOf('type'), cellCount: cells.length, colByStudent: new Map() };
+            for (let i = totalPointsIdx + 1; i < cells.length; i++) {
+              const name = cells[i].textContent.trim();
+              if (!name) continue;
+              const key = cells[i].querySelector('[data-id]')?.dataset.id || norm(name);
+              header.colByStudent.set(key, i);
+              if (!seenStudents.has(key)) {
+                seenStudents.add(key);
+                studentCols.push({ name, key, colIndex: i, normalizedName: norm(name) });
+              }
+            }
+            continue;
+          }
+
+          // Cell count must match the header or student columns would be misaligned.
+          if (!header || cells.length !== header.cellCount) continue;
+          const assessment = cells[header.assessmentIdx].textContent.trim();
+          if (!assessment) continue;
+          if (/\blab\s+(?:activity|assignment)\b/i.test(assessment)) continue;
+          // Rows with no grade inputs are not gradable (e.g. the "Score:" summary row).
+          const hasInput = Array.from(header.colByStudent.values()).some(i => cells[i].querySelector(SEL.gradeInput));
+          if (!hasInput) continue;
+          const type = header.typeIdx !== -1 ? cells[header.typeIdx].textContent.trim() : '';
+          assessmentRows.push({ row, course, assessment, type, cells, colByStudent: header.colByStudent });
+        }
       }
 
-      const assessmentRows = [];
-      for (let r = 1; r < rows.length; r++) {
-        const cells = Array.from(rows[r].cells);
-        if (cells.length < SEL.fixedColCount) continue;
-        const course = cells[0]?.textContent.trim() || '';
-        const assessment = cells[SEL.assessmentCell]?.textContent.trim() || '';
-        const type = cells[2]?.textContent.trim() || '';
-        if (!assessment) continue;
-        if (/\blab\s+(?:activity|assignment)\b/i.test(assessment)) continue;
-        assessmentRows.push({ rowIndex: r, row: rows[r], course, assessment, type, cells });
-      }
-      return { table, studentCols, assessmentRows };
+      if (!studentCols.length || !assessmentRows.length) return null;
+      return { studentCols, assessmentRows };
+    }
+
+    function gradeInputFor(assessmentRow, studentCol) {
+      const colIndex = assessmentRow.colByStudent.get(studentCol.key);
+      if (colIndex === undefined) return null;
+      return assessmentRow.cells[colIndex].querySelector(SEL.gradeInput);
     }
 
     function populateRowSelector(assessmentRows, studentCols) {
@@ -909,7 +928,7 @@
 
     function buildMatches(assessmentRow, studentCols, moodleStudents) {
       return studentCols.map(col => {
-        const input = assessmentRow.cells[col.colIndex]?.querySelector(SEL.gradeInput) || null;
+        const input = gradeInputFor(assessmentRow, col);
         const match = findStudentMatch(col.name, moodleStudents);
         return { novaName: col.name, colIndex: col.colIndex, input, match };
       });
@@ -1299,9 +1318,9 @@
       });
     });
 
-    // ── Fill Student ──────────────────────────────────────────────────────────
-    // Iterates all Nova assessment rows (same direction as Preview) and fills
-    // only the selected student's cell in each matched row.
+    // ── Preview Student ───────────────────────────────────────────────────────
+    // Iterates all Nova assessment rows (same direction as Preview), shows the
+    // matches, and on confirm fills only the selected student's cell in each row.
     document.getElementById('mns-fill-stu-btn').addEventListener('click', async () => {
       const stored = await GM_getValue(STORAGE_KEY, null);
       if (!stored) { flash('⚠ No captured Moodle grades — Capture on Moodle first.', '#b00', 0); return; }
@@ -1326,17 +1345,20 @@
         const grade = isConfident ? studentMatch.student.grade || '' : '';
         const suggestName  = (!isConfident && studentMatch) ? studentMatch.student.name  : '';
         const suggestGrade = (!isConfident && studentMatch) ? studentMatch.student.grade || '' : '';
-        const input = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
+        const matchName  = isConfident ? studentMatch.student.name : '';
+        const matchFuzzy = isConfident && studentMatch.type === 'fuzzy';
+        const input = gradeInputFor(assessmentRow, studentCol);
         const existing = input?.value.trim() || '';
-        return { assessmentRow, rowIdx, actKey, grade, suggestName, suggestGrade, input, existing };
+        return { assessmentRow, rowIdx, actKey, grade, matchName, matchFuzzy, suggestName, suggestGrade, input, existing };
       }); // unmatched rows (no actKey) are kept so user can assign them via the dropdown
 
       const fsToFill = () => mappings.filter(m => m.grade && m.input).length;
       const noGrade = mappings.filter(m => m.actKey && !m.grade && !m.suggestGrade).length;
 
       const renderFsRows = maps => maps.map((m, i) => {
-        const gradeDisplay = m.grade
-          ? `<b>${m.grade}</b>`
+        const gradeDisplay = m.grade ? `<b>${m.grade}</b>` : '—';
+        const moodleStudent = m.matchName
+          ? `${m.matchFuzzy ? '⚠ ' : ''}${m.matchName}`
           : m.suggestName
           ? `<span class="mns-fs-sug-pick" data-idx="${i}" title="Click to accept this match" style="cursor:pointer;text-decoration:underline dotted;color:#4455bb">❓ ${m.suggestName}</span> <small style="color:#6677aa">(click to accept)</small>`
           : '—';
@@ -1349,6 +1371,7 @@
               ${actKeys.map(k => `<option value="${k}" ${k === m.actKey ? 'selected' : ''}>${k}</option>`).join('')}
             </select>
           </td>
+          <td style="padding:3px 8px">${moodleStudent}</td>
           <td style="padding:3px 8px;text-align:center">
             ${m.existing ? `<span style="color:#b05000;font-size:10px">${m.existing} → </span>` : ''}${gradeDisplay}
           </td>
@@ -1358,7 +1381,7 @@
 
       panel.innerHTML = `
         <div class="mns-ph">
-          <span>Fill Student: ${studentCol.name} &nbsp;(${fsToFill()} grades)</span>
+          <span>Preview Student: ${studentCol.name} &nbsp;(<span id="mns-fs-count">${fsToFill()}</span> grades)</span>
           <span class="mns-px" id="mns-close-panel">✕</span>
         </div>
         <div style="padding:6px 12px;background:#fff8e1;border-bottom:1px solid #ffe082;font-size:11px">
@@ -1371,7 +1394,7 @@
           <button id="mns-fs-accept-all" style="font-size:11px;padding:2px 10px;background:#4455bb;color:#fff;border:none;border-radius:4px;cursor:pointer">Accept all ❓</button>
         </div>` : ''}
         <table class="mns-tbl" style="font-size:11px">
-          <thead><tr><th>Nova Row</th><th>Moodle Activity</th><th>Grade</th></tr></thead>
+          <thead><tr><th>Nova Row</th><th>Moodle Activity</th><th>Moodle Student</th><th>Grade</th></tr></thead>
           <tbody>${tableRows}</tbody>
         </table>
         ${noGrade ? `<div style="padding:4px 12px;font-size:10px;color:#888">⚠ ${noGrade} matched rows have no grade for this student in Moodle.</div>` : ''}
@@ -1387,9 +1410,12 @@
         const idx = parseInt(pick.dataset.idx, 10);
         if (isNaN(idx) || !mappings[idx] || !mappings[idx].suggestGrade) return;
         mappings[idx].grade        = mappings[idx].suggestGrade;
+        mappings[idx].matchName    = mappings[idx].suggestName;
+        mappings[idx].matchFuzzy   = true;
         mappings[idx].suggestName  = '';
         mappings[idx].suggestGrade = '';
         panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
+        document.getElementById('mns-fs-count').textContent = fsToFill();
         document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
         if (!mappings.some(m => m.suggestName)) document.getElementById('mns-fs-accept-bar')?.remove();
       });
@@ -1406,14 +1432,18 @@
           const studentMatch = findStudentMatch(studentCol.name, activities[newActKey]);
           const isConfident = studentMatch && studentMatch.type !== 'suggestion';
           mappings[idx].grade        = isConfident ? studentMatch.student.grade || '' : '';
+          mappings[idx].matchName    = isConfident ? studentMatch.student.name : '';
+          mappings[idx].matchFuzzy   = isConfident && studentMatch.type === 'fuzzy';
           mappings[idx].suggestName  = (!isConfident && studentMatch) ? studentMatch.student.name  : '';
           mappings[idx].suggestGrade = (!isConfident && studentMatch) ? studentMatch.student.grade || '' : '';
         } else {
           mappings[idx].grade = '';
+          mappings[idx].matchName    = '';
           mappings[idx].suggestName  = '';
           mappings[idx].suggestGrade = '';
         }
         panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
+        document.getElementById('mns-fs-count').textContent = fsToFill();
         document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
         if (!mappings.some(m => m.suggestName)) document.getElementById('mns-fs-accept-bar')?.remove();
       });
@@ -1423,11 +1453,14 @@
         for (const m of mappings) {
           if (m.suggestName && m.suggestGrade) {
             m.grade        = m.suggestGrade;
+            m.matchName    = m.suggestName;
+            m.matchFuzzy   = true;
             m.suggestName  = '';
             m.suggestGrade = '';
           }
         }
         panel.querySelector('tbody').innerHTML = renderFsRows(mappings);
+        document.getElementById('mns-fs-count').textContent = fsToFill();
         document.getElementById('mns-go').textContent = `✓ Fill ${fsToFill()} grade(s) for ${studentCol.name}`;
         document.getElementById('mns-fs-accept-bar')?.remove();
       });
@@ -1476,7 +1509,7 @@
       const studentCol = parsed.studentCols[stuIdx];
 
       const inputs = parsed.assessmentRows
-        .map(r => r.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput))
+        .map(r => gradeInputFor(r, studentCol))
         .filter(inp => inp && inp.value.trim() !== '');
 
       panel.innerHTML = `
@@ -1632,7 +1665,7 @@
       const allInputs = [];
       for (const assessmentRow of parsed.assessmentRows) {
         for (const studentCol of parsed.studentCols) {
-          const inp = assessmentRow.cells[studentCol.colIndex]?.querySelector(SEL.gradeInput);
+          const inp = gradeInputFor(assessmentRow, studentCol);
           if (inp && inp.value.trim() !== '') allInputs.push(inp);
         }
       }
